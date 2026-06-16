@@ -185,3 +185,14 @@ class SheetManager
     false
   end
 end
+
+  def available_locations
+    rows = read(LOCATION_SHEET, 'A:G')
+    result = []
+    rows[1..].each do |row|
+      next if row.nil? || row[0].to_s.strip.empty?
+      next if row[6].to_s.strip.upcase == 'FALSE'
+      result << row[0].to_s.strip
+    end
+    result
+  end

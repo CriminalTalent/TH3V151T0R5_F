@@ -3,8 +3,10 @@
 require 'cgi'
 
 require_relative 'commands/location_command'
-require_relative 'commands/scout_command'
 require_relative 'commands/investigate_command'
+require_relative 'commands/acquire_command'
+require_relative 'commands/scout_start_command'
+require_relative 'commands/scout_end_command'
 
 module CommandParser
   def self.parse(mastodon_client, sheet_manager, notification)
@@ -19,11 +21,17 @@ module CommandParser
     when /\[위치\/(.+?)\]/
       LocationCommand.new(sheet_manager, mastodon_client, sender, $1.strip, status).execute
 
-    when /\[둘러보기\]/
-      ScoutCommand.new(sheet_manager, mastodon_client, sender, status).execute
-
     when /\[조사\/(.+?)\]/
       InvestigateCommand.new(sheet_manager, mastodon_client, sender, $1.strip, status).execute
+
+    when /\[획득\/(.+?)\]/
+      AcquireCommand.new(sheet_manager, mastodon_client, sender, $1.strip, status).execute
+
+    when /\[조사시작\]/
+      ScoutStartCommand.new(sheet_manager, mastodon_client, sender, status).execute
+
+    when /\[조사종료\]/
+      ScoutEndCommand.new(sheet_manager, mastodon_client, sender, status).execute
 
     else
       return

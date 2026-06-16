@@ -1,7 +1,7 @@
-# commands/investigate_command.rb
+# commands/acquire_command.rb
 # encoding: UTF-8
 
-class InvestigateCommand
+class AcquireCommand
   def initialize(sheet_manager, mastodon_client, sender, obj_name, status)
     @sheet_manager   = sheet_manager
     @mastodon_client = mastodon_client
@@ -35,33 +35,31 @@ class InvestigateCommand
       return
     end
 
-    lines = []
-    lines << "[ #{@obj_name} ]"
-    lines << "──────────────────"
-    lines << obj[:result] unless obj[:result].empty?
-
-    if !obj[:item].empty?
-      taken_ids = obj[:taken_by].split(',').map(&:strip).reject(&:empty?)
-      if obj[:once] && taken_ids.include?(@sender)
-        lines << ""
-        lines << "이미 가져간 적이 있는 물건입니다."
-      elsif obj[:once] && !taken_ids.empty?
-        lines << ""
-        lines << "누군가 이미 가져간 것 같습니다."
-      else
-        lines << ""
-        lines << "[획득/#{@obj_name}] 으로 가져갈 수 있습니다."
-      end
+    if obj[:item].empty?
+      dm("#{@obj_name} 은(는) 가져갈 수 있는 물건이 없습니다.")
+      return
     end
 
-    @sheet_manager.update_scout_state(@sender, {
-      location:    state[:location],
-      last_action: '조사'
-    })
+    taken_ids = obj[:taken_by].split(',').map(&:strip).reject(&:empty?)
 
-    dm(lines.join("\n"))
+    if obj[:once] && taken_ids.include?(@sender)
+      dm("이미 가져간 적이 있는 물건입니다.")
+      return
+    end
+
+    if obj[:once] && !taken_ids.empty?
+      dm("누군가 이미 가져간 것 같습니다.")
+      return
+    end
+
+    items = user[:items].split(',').map(&:strip).reject(&:empty?)
+    items << obj[:item]
+    @sheet_manager.update_user(@sender, { items: items.join(',') })
+    @sheet_manager.update_object_taken(state[:location], @obj_name, @sender) if obj[:once]
+
+    dm("#{obj[:item]} 을(를) 획득했습니다.")
   rescue => e
-    puts "[InvestigateCommand 오류] #{e.message}"
+    puts "[AcquireCommand 오류] #{e.message}"
     dm("처리 중 오류가 발생했습니다.")
   end
 
