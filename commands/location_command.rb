@@ -2,7 +2,7 @@
 # encoding: UTF-8
 
 class LocationCommand
-  MAX_CHARS = 450
+  MAX_CHARS = 1000
 
   def initialize(sheet_manager, mastodon_client, sender, location_name, status)
     @sheet_manager   = sheet_manager
