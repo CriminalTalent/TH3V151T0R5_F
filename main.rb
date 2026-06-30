@@ -10,6 +10,9 @@ require_relative 'mastodon_client'
 require_relative 'sheet_manager'
 require_relative 'command_parser'
 
+$stdout.sync = true
+$stderr.sync = true
+
 LAST_FILE = '/root/TH3V151T0R5_F/last_mention_id.txt'
 BASE_URL  = ENV['MASTODON_BASE_URL']
 TOKEN     = ENV['MASTODON_TOKEN']
@@ -62,8 +65,10 @@ loop do
       last_id = nid
       File.write(LAST_FILE, last_id.to_s)
 
-      puts "[멘션] ID=#{nid}, from=@#{n.dig('account', 'acct')}"
+      puts "[멘션] ID=#{nid}, status_id=#{n.dig('status', 'id')}, from=@#{n.dig('account', 'acct')}"
+      puts "[처리 시작] notification_id=#{nid}, status_id=#{n.dig('status', 'id')}"
       CommandParser.parse(client, sheet_manager, n)
+      puts "[처리 종료] notification_id=#{nid}, status_id=#{n.dig('status', 'id')}"
       sleep 1
     end
   rescue => e
