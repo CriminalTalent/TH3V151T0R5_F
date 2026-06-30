@@ -53,7 +53,7 @@ puts '────────────────────────�
 
 loop do
   begin
-    notifications = client.notifications(limit: 40)
+    notifications = client.notifications(limit: 40, since_id: last_id)
     notifications.reverse_each do |n|
       nid = n['id'].to_i
       next unless nid > last_id
