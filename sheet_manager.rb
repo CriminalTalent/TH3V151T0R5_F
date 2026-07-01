@@ -126,7 +126,7 @@ class SheetManager
   # 장소
   # ──────────────────────────────────────────────
   def find_location(location_name)
-    rows = read(LOCATION_SHEET, 'A:L')
+    rows = read(LOCATION_SHEET, 'A:N')
     location_name = location_name.to_s.strip
     result = nil
     objects = []
@@ -141,22 +141,22 @@ class SheetManager
         result = {
           name:    name,
           desc:    row[1].to_s.strip,
-          choices: [row[2], row[3], row[4], row[5]].map(&:to_s).map(&:strip).reject(&:empty?),
-          public:  row[6].to_s.strip.upcase != 'FALSE'
+          choices: row[2..7].to_a.map(&:to_s).map(&:strip).reject(&:empty?),
+          public:  row[8].to_s.strip.upcase != 'FALSE'
         }
       end
 
-      obj_name = row[7].to_s.strip
+      obj_name = row[9].to_s.strip
       next if obj_name.empty?
       next unless current_loc == location_name
 
       objects << {
         location:  current_loc,
         name:      obj_name,
-        result:    row[8].to_s.strip,
-        item:      row[9].to_s.strip,
-        once:      row[10].to_s.strip.upcase == 'TRUE' || row[10] == true,
-        taken_by:  row[11].to_s.strip
+        result:    row[10].to_s.strip,
+        item:      row[11].to_s.strip,
+        once:      row[12].to_s.strip.upcase == 'TRUE' || row[12] == true,
+        taken_by:  row[13].to_s.strip
       }
     end
 
@@ -169,17 +169,17 @@ class SheetManager
     location_name = location_name.to_s.strip
     obj_name      = obj_name.to_s.strip
     acct          = acct.to_s.gsub('@', '').strip
-    rows = read(LOCATION_SHEET, 'A:L')
+    rows = read(LOCATION_SHEET, 'A:N')
     current_loc = ''
     rows[1..].each_with_index do |row, i|
       next if row.nil?
       loc = row[0].to_s.strip
       current_loc = loc unless loc.empty?
       next unless current_loc == location_name
-      next unless row[7].to_s.strip == obj_name
+      next unless row[9].to_s.strip == obj_name
       existing = row[11].to_s.strip
       new_val  = existing.empty? ? acct : "#{existing},#{acct}"
-      write(LOCATION_SHEET, "L#{i + 2}", [[new_val]])
+      write(LOCATION_SHEET, "N#{i + 2}", [[new_val]])
       return true
     end
     false
@@ -187,11 +187,11 @@ class SheetManager
 end
 
   def available_locations
-    rows = read(LOCATION_SHEET, 'A:G')
+    rows = read(LOCATION_SHEET, 'A:I')
     result = []
     rows[1..].each do |row|
       next if row.nil? || row[0].to_s.strip.empty?
-      next if row[6].to_s.strip.upcase == 'FALSE'
+      next if row[8].to_s.strip.upcase == 'FALSE'
       result << row[0].to_s.strip
     end
     result
