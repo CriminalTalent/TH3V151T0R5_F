@@ -7,6 +7,7 @@ require_relative 'commands/investigate_command'
 require_relative 'commands/acquire_command'
 require_relative 'commands/scout_start_command'
 require_relative 'commands/scout_end_command'
+require_relative 'commands/grid_move_command'
 
 module CommandParser
   BOT_USERNAME    = (ENV['BOT_USERNAME'] || 'DOWN').freeze
@@ -40,6 +41,9 @@ module CommandParser
 
     when /\[조사종료\]/
       ScoutEndCommand.new(sheet_manager, mastodon_client, sender, status).execute
+
+    when /\[탐사\/(북쪽|남쪽|동쪽|서쪽|돌아가기)\]/
+      GridMoveCommand.new(sheet_manager, mastodon_client, sender, $1.strip, status).execute
 
     else
       return
@@ -95,7 +99,7 @@ module CommandParser
     CGI.unescapeHTML(
       html.to_s
         .gsub(/<br\s*\/?>/i, "\n")
-        .gsub(/<\/p\s*>/i, "\n")
+        .gsub(/<\/p\s*>/i, '')
         .gsub(/<p[^>]*>/i, '')
         .gsub(/<[^>]*>/, '')
     ).gsub("\u00A0", ' ').strip
