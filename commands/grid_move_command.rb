@@ -145,17 +145,12 @@ class GridMoveCommand
   end
 
   def location_title(location)
-    code = location[:code].to_s.strip
     label = location[:label].to_s.strip
     label = location[:name].to_s.strip if label.empty?
 
-    if code.empty?
-      label
-    elsif label.empty? || label == code
-      code
-    else
-      "#{code} #{label}"
-    end
+    # 격자 이동은 좌표를 러너에게 노출하지 않는다. 이름이 비어 있으면
+    # 좌표 대신 일반 문구로 대체한다.
+    label.empty? ? '알 수 없는 장소' : label
   end
 
   def visible_object?(obj)
