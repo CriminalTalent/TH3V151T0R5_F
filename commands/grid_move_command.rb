@@ -2,13 +2,15 @@
 # encoding: UTF-8
 #
 # [탐사/북쪽] [탐사/남쪽] [탐사/동쪽] [탐사/서쪽] [탐사/돌아가기]
+# [탐사/북쪽] @동료1 @동료2 처럼 멘션을 함께 쓰면 파티 전원이 함께 이동하고,
+# 파티 전체에게 그룹 DM으로 안내되며 같은 스레드로 계속 이어진다.
+# 멘션 없이 혼자 쓰면 기존과 동일하게 개인 단위로 동작한다.
 #
 # 기존 [위치/장소명] [조사/오브젝트명] [획득/오브젝트명] 명령어와는
 # 완전히 별개의 명령어이며, 기존 파일(location_command.rb 등)은 수정하지 않는다.
 #
 # 좌표 칸은 기존 "장소" 시트를 그대로 사용한다.
 # (위치 칸에 좌표코드 예: A1 ~ M7 을 넣어두면 기존 [조사]/[획득] 명령어가 그대로 동작함)
-# 직전 좌표만 별도 시트(격자직전위치)에 새로 저장한다.
 
 class GridMoveCommand
   MAX_CHARS = 1000
@@ -28,12 +30,13 @@ class GridMoveCommand
     @sender          = sender.to_s.gsub('@', '')
     @direction       = direction.to_s.strip
     @status          = status
+    @party           = build_party
   end
 
   def execute
     user = @sheet_manager.find_user(@sender)
     unless user
-      dm("아직 등록되지 않은 계정입니다.", @status['id'])
+      dm_solo("아직 등록되지 않은 계정입니다.")
       return
     end
 
@@ -41,7 +44,7 @@ class GridMoveCommand
     current_coord = scout_state ? scout_state[:location].to_s.strip.upcase : ''
 
     unless valid_coord?(current_coord)
-      dm("현재 위치가 격자 좌표가 아닙니다. [위치/좌표] 명령으로 먼저 격자 칸(예: A1)으로 이동해주세요.", @status['id'])
+      dm_solo("현재 위치가 격자 좌표가 아닙니다. [위치/좌표] 명령으로 먼저 격자 칸(예: A1)으로 이동해주세요.")
       return
     end
 
@@ -53,44 +56,62 @@ class GridMoveCommand
   rescue => e
     puts "[GridMoveCommand 오류] #{e.class}: #{e.message}"
     puts e.backtrace.first(5)
-    dm("처리 중 오류가 발생했습니다.", @status['id']) if @status
+    dm_solo("처리 중 오류가 발생했습니다.")
   end
 
   private
 
+  # ── 파티 구성 ──
+
+  def build_party
+    mentioned = @status['mentions'].to_a.map do |m|
+      (m['username'] || m['acct']).to_s.gsub('@', '').split('@').first.strip
+    end.reject(&:empty?)
+
+    bot_username = defined?(CommandParser) ? CommandParser::BOT_USERNAME : nil
+    mentioned = mentioned.reject { |u| bot_username && u.casecmp?(bot_username) }
+
+    ([@sender] + mentioned).uniq
+  end
+
+  def party?
+    @party.size > 1
+  end
+
+  def party_key
+    @party.sort.join('+')
+  end
+
+  # ── 이동 처리 ──
+
   def handle_direction(current_coord)
     delta = DIRECTIONS[@direction]
     unless delta
-      dm("알 수 없는 방향입니다.", @status['id'])
+      dm_solo("알 수 없는 방향입니다.")
       return
     end
 
     target_coord = neighbor_coord(current_coord, delta)
 
     unless target_coord
-      dm("그 방향으로는 더 이상 이동할 수 없습니다.", @status['id'])
+      dm_solo("그 방향으로는 더 이상 이동할 수 없습니다.")
       return
     end
 
     location = @sheet_manager.find_location(target_coord)
     unless location && location[:public]
-      dm("그 방향은 갈 수 없는 곳입니다.", @status['id'])
+      dm_solo("그 방향은 갈 수 없는 곳입니다.")
       return
     end
 
-    @sheet_manager.update_grid_prev(@sender, current_coord)
-
-    @sheet_manager.update_scout_state(@sender, {
-      location:    target_coord,
-      last_action: '이동'
-    })
+    move_party!(current_coord, target_coord)
 
     if location[:creature] && !location[:creature].to_s.strip.empty?
       trigger_encounter(location)
       return
     end
 
-    send_threaded(build_lines(target_coord, location), @status['id'])
+    send_party(build_lines(target_coord, location))
   end
 
   def handle_return(current_coord)
@@ -98,29 +119,35 @@ class GridMoveCommand
     prev_coord = prev ? prev[:prev].to_s.strip.upcase : ''
 
     unless valid_coord?(prev_coord)
-      dm("돌아갈 수 있는 이전 위치가 없습니다.", @status['id'])
+      dm_solo("돌아갈 수 있는 이전 위치가 없습니다.")
       return
     end
 
     location = @sheet_manager.find_location(prev_coord)
     unless location && location[:public]
-      dm("이전 위치로 돌아갈 수 없습니다.", @status['id'])
+      dm_solo("이전 위치로 돌아갈 수 없습니다.")
       return
     end
 
-    @sheet_manager.update_grid_prev(@sender, current_coord)
-
-    @sheet_manager.update_scout_state(@sender, {
-      location:    prev_coord,
-      last_action: '이동'
-    })
+    move_party!(current_coord, prev_coord)
 
     if location[:creature] && !location[:creature].to_s.strip.empty?
       trigger_encounter(location)
       return
     end
 
-    send_threaded(build_lines(prev_coord, location), @status['id'])
+    send_party(build_lines(prev_coord, location))
+  end
+
+  # 파티 전원의 조사상태/직전좌표를 함께 갱신한다.
+  def move_party!(from_coord, to_coord)
+    @party.each do |acct|
+      @sheet_manager.update_grid_prev(acct, from_coord)
+      @sheet_manager.update_scout_state(acct, {
+        location:    to_coord,
+        last_action: '이동'
+      })
+    end
   end
 
   def valid_coord?(coord)
@@ -210,7 +237,7 @@ class GridMoveCommand
     @sheet_manager.activate_creature_boss(creature_name, location[:code])
 
     runners = @sheet_manager.runners_at_location(location[:code])
-    runners = [{ acct: @sender, name: @sender }] if runners.empty?
+    runners = @party.map { |acct| { acct: acct, name: acct } } if runners.empty?
 
     tags  = runners.map { |r| "@#{r[:acct]}" }.join(' ')
     names = runners.map { |r| r[:name].to_s.empty? ? r[:acct] : r[:name] }.join(', ')
@@ -230,23 +257,47 @@ class GridMoveCommand
                      "━━━━━━━━━━━━━━\n" \
                      "[전투시작]"
 
-    dm(encounter_text, @status['id'])
+    # 크리쳐 조우는 파티 전원에게 태그되어야 하므로 별도 스레드 관리 없이
+    # 현재 명령의 스레드에 이어 보낸다.
+    post(encounter_text, thread_anchor)
 
-    @sheet_manager.update_scout_state(@sender, {
-      location:    location[:code],
-      last_action: '전투전환'
-    })
+    @party.each do |acct|
+      @sheet_manager.update_scout_state(acct, {
+        location:    location[:code],
+        last_action: '전투전환'
+      })
+    end
   end
 
-  def send_threaded(lines, reply_id)
+  # ── 발송 ──
+
+  # 파티가 2명 이상이면 파티 전용 스레드(탐사스레드 시트)에 이어서 보내고,
+  # 혼자면 기존처럼 이번 명령 상태에 답장한다.
+  def thread_anchor
+    return @status['id'] unless party?
+
+    stored = @sheet_manager.find_party_thread(party_key)
+    stored && !stored[:thread_id].to_s.strip.empty? ? stored[:thread_id] : @status['id']
+  end
+
+  def send_party(lines)
+    tags = @party.map { |acct| "@#{acct}" }.join(' ')
+    send_threaded(lines, thread_anchor, tags)
+  end
+
+  def dm_solo(text)
+    post("@#{@sender} #{text}", @status['id'])
+  end
+
+  def send_threaded(lines, reply_id, header_tags)
     chunks = []
-    current = "@#{@sender}"
+    current = header_tags
 
     lines.each do |line|
       candidate = "#{current}\n#{line}"
       if candidate.length > MAX_CHARS
         chunks << current unless current.strip.empty?
-        current = "@#{@sender}\n#{line}"
+        current = "#{header_tags}\n#{line}"
       else
         current = candidate
       end
@@ -254,13 +305,17 @@ class GridMoveCommand
 
     chunks << current unless current.strip.empty?
 
+    last_id = reply_id
     chunks.each do |chunk|
-      dm(chunk, reply_id)
+      response = post(chunk, last_id)
+      last_id = response['id'] if response && response['id']
       sleep 0.5
     end
+
+    @sheet_manager.update_party_thread(party_key, last_id) if party? && last_id
   end
 
-  def dm(text, reply_id)
+  def post(text, reply_id)
     @mastodon_client.post_status(
       text,
       reply_to_id: reply_id,
