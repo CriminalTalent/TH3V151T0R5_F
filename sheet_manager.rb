@@ -580,9 +580,17 @@ class SheetManager
   # C = 위치
   # ──────────────────────────────────────────────
 
+  # 조사맵 좌표계(A~M, 1~7)와 전투봇 좌표계(A~G, 1~8)는 서로 다른 체계이므로,
+  # 전투봇이 이해할 수 있는 좌표일 때만 위치를 함께 넘긴다. 그 외에는 크리쳐
+  # 활성화만 하고 위치는 건드리지 않아 전투봇 쪽 기존 위치(또는 기본값)를 그대로 둔다.
+  def battle_grid_coord?(code)
+    !!code.to_s.strip.upcase.match(/\A[A-G][1-8]\z/)
+  end
+
   def activate_creature_boss(creature_name, location_code = nil)
     creature_name = creature_name.to_s.strip
     location_code = location_code.to_s.strip.upcase
+    battle_pos = battle_grid_coord?(location_code) ? location_code : ''
 
     return false if creature_name.empty?
 
@@ -599,7 +607,7 @@ class SheetManager
 
         row_num = i + 2
         write_to(@creature_sheet_id, '스탯', "#{active_col}#{row_num}", [[true]])
-        write_to(@creature_sheet_id, '스탯', "#{location_col}#{row_num}", [[location_code]]) unless location_code.empty?
+        write_to(@creature_sheet_id, '스탯', "#{location_col}#{row_num}", [[battle_pos]]) unless battle_pos.empty?
         return true
       end
     end
@@ -612,7 +620,7 @@ class SheetManager
       @creature_sheet_id,
       BOSS_SHEET,
       'A2:C2',
-      [[true, creature_name, location_code]]
+      [[true, creature_name, battle_pos]]
     )
   rescue => e
     puts "[activate_creature_boss 오류] #{e.class} - #{e.message}"
