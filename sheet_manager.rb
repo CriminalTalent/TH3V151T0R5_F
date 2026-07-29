@@ -11,10 +11,11 @@ class SheetManager
   BOSS_SHEET     = '보스'.freeze
   GRID_PREV_SHEET = '격자직전위치'.freeze
 
-  def initialize(service, sheet_id, creature_sheet_id = nil)
+  def initialize(service, sheet_id, creature_sheet_id = nil, grid_sheet_id = nil)
     @service           = service
     @sheet_id          = sheet_id
     @creature_sheet_id = creature_sheet_id.to_s.strip.empty? ? sheet_id : creature_sheet_id
+    @grid_sheet_id     = grid_sheet_id.to_s.strip.empty? ? nil : grid_sheet_id
   end
 
   # ──────────────────────────────────────────────
@@ -291,9 +292,13 @@ class SheetManager
   # 기존 위치 값(현재 좌표)은 그대로 조사상태 시트의 '위치' 칸을 사용한다.
   # ──────────────────────────────────────────────
 
+  def grid_prev_sheet_id
+    @grid_sheet_id || @sheet_id
+  end
+
   def find_grid_prev(acct)
     acct = acct.to_s.gsub('@', '').strip
-    rows = read(GRID_PREV_SHEET, 'A:B')
+    rows = read_from(grid_prev_sheet_id, GRID_PREV_SHEET, 'A:B')
     return nil if rows.empty?
 
     headers = header_map(rows[0])
@@ -318,11 +323,12 @@ class SheetManager
   def update_grid_prev(acct, coord)
     acct  = acct.to_s.gsub('@', '').strip
     coord = coord.to_s.strip.upcase
+    sheet_id = grid_prev_sheet_id
 
-    rows = read(GRID_PREV_SHEET, 'A:B')
+    rows = read_from(sheet_id, GRID_PREV_SHEET, 'A:B')
 
     if rows.empty?
-      append(GRID_PREV_SHEET, [acct, coord])
+      append_to(sheet_id, GRID_PREV_SHEET, [acct, coord])
       return true
     end
 
@@ -333,11 +339,11 @@ class SheetManager
       id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
       next unless id.gsub('@', '').strip == acct
 
-      write(GRID_PREV_SHEET, "#{prev_col}#{i + 2}", [[coord]])
+      write_to(sheet_id, GRID_PREV_SHEET, "#{prev_col}#{i + 2}", [[coord]])
       return true
     end
 
-    append(GRID_PREV_SHEET, [acct, coord])
+    append_to(sheet_id, GRID_PREV_SHEET, [acct, coord])
     true
   rescue => e
     puts "[update_grid_prev 오류] #{e.class} - #{e.message}"
@@ -354,7 +360,18 @@ class SheetManager
   # ──────────────────────────────────────────────
 
   def find_location(location_code)
-    rows = read(LOCATION_SHEET, 'A:S')
+    found = find_location_in(@sheet_id, location_code)
+    return found if found
+
+    return nil if @grid_sheet_id.nil?
+    find_location_in(@grid_sheet_id, location_code)
+  rescue => e
+    puts "[find_location 오류] #{e.class} - #{e.message}"
+    nil
+  end
+
+  def find_location_in(sheet_id, location_code)
+    rows = read_from(sheet_id, LOCATION_SHEET, 'A:S')
     return nil if rows.empty?
 
     headers = header_map(rows[0])
@@ -448,11 +465,20 @@ class SheetManager
   end
 
   def update_object_taken(location_code, obj_name, acct)
+    return true if update_object_taken_in(@sheet_id, location_code, obj_name, acct)
+    return false if @grid_sheet_id.nil?
+    update_object_taken_in(@grid_sheet_id, location_code, obj_name, acct)
+  rescue => e
+    puts "[update_object_taken 오류] #{e.class} - #{e.message}"
+    false
+  end
+
+  def update_object_taken_in(sheet_id, location_code, obj_name, acct)
     location_code = location_code.to_s.strip.upcase
     obj_name      = obj_name.to_s.strip
     acct          = acct.to_s.gsub('@', '').strip
 
-    rows = read(LOCATION_SHEET, 'A:S')
+    rows = read_from(sheet_id, LOCATION_SHEET, 'A:S')
     return false if rows.empty?
 
     headers = header_map(rows[0])
@@ -470,22 +496,31 @@ class SheetManager
       existing = cell(row, headers, '획득자ID')
       new_val = existing.empty? ? acct : "#{existing},#{acct}"
 
-      write(LOCATION_SHEET, "#{taken_col}#{i + 2}", [[new_val]])
+      write_to(sheet_id, LOCATION_SHEET, "#{taken_col}#{i + 2}", [[new_val]])
       return true
     end
 
     false
   rescue => e
-    puts "[update_object_taken 오류] #{e.class} - #{e.message}"
+    puts "[update_object_taken_in 오류] #{e.class} - #{e.message}"
     false
   end
 
   def update_credit_taken(location_code, obj_name, acct)
+    return true if update_credit_taken_in(@sheet_id, location_code, obj_name, acct)
+    return false if @grid_sheet_id.nil?
+    update_credit_taken_in(@grid_sheet_id, location_code, obj_name, acct)
+  rescue => e
+    puts "[update_credit_taken 오류] #{e.class} - #{e.message}"
+    false
+  end
+
+  def update_credit_taken_in(sheet_id, location_code, obj_name, acct)
     location_code = location_code.to_s.strip.upcase
     obj_name      = obj_name.to_s.strip
     acct          = acct.to_s.gsub('@', '').strip
 
-    rows = read(LOCATION_SHEET, 'A:S')
+    rows = read_from(sheet_id, LOCATION_SHEET, 'A:S')
     return false if rows.empty?
 
     headers = header_map(rows[0])
@@ -503,13 +538,13 @@ class SheetManager
       existing = cell(row, headers, '크레딧수령자ID')
       new_val = existing.empty? ? acct : "#{existing},#{acct}"
 
-      write(LOCATION_SHEET, "#{taken_col}#{i + 2}", [[new_val]])
+      write_to(sheet_id, LOCATION_SHEET, "#{taken_col}#{i + 2}", [[new_val]])
       return true
     end
 
     false
   rescue => e
-    puts "[update_credit_taken 오류] #{e.class} - #{e.message}"
+    puts "[update_credit_taken_in 오류] #{e.class} - #{e.message}"
     false
   end
 
