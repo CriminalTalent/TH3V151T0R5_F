@@ -9,6 +9,7 @@ class SheetManager
   LOCATION_SHEET = '장소'.freeze
   SCOUT_SHEET    = '조사상태'.freeze
   BOSS_SHEET     = '보스'.freeze
+  GRID_PREV_SHEET = '격자직전위치'.freeze
 
   def initialize(service, sheet_id, creature_sheet_id = nil)
     @service           = service
@@ -280,6 +281,67 @@ class SheetManager
   rescue => e
     puts "[runners_at_location 오류] #{e.class} - #{e.message}"
     []
+  end
+
+  # ──────────────────────────────────────────────
+  # 격자 이동([탐사/북쪽] 등) 전용 - 직전 좌표 저장
+  #
+  # 헤더: ID / 직전좌표
+  # 기존 조사상태 시트와 별도의 시트를 사용하며,
+  # 기존 위치 값(현재 좌표)은 그대로 조사상태 시트의 '위치' 칸을 사용한다.
+  # ──────────────────────────────────────────────
+
+  def find_grid_prev(acct)
+    acct = acct.to_s.gsub('@', '').strip
+    rows = read(GRID_PREV_SHEET, 'A:B')
+    return nil if rows.empty?
+
+    headers = header_map(rows[0])
+
+    rows[1..].to_a.each_with_index do |row, i|
+      id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
+      next unless id.gsub('@', '').strip == acct
+
+      return {
+        row_num: i + 2,
+        id:      id,
+        prev:    first_present(cell(row, headers, '직전좌표'), row[1]).to_s.strip
+      }
+    end
+
+    nil
+  rescue => e
+    puts "[find_grid_prev 오류] #{e.class} - #{e.message}"
+    nil
+  end
+
+  def update_grid_prev(acct, coord)
+    acct  = acct.to_s.gsub('@', '').strip
+    coord = coord.to_s.strip.upcase
+
+    rows = read(GRID_PREV_SHEET, 'A:B')
+
+    if rows.empty?
+      append(GRID_PREV_SHEET, [acct, coord])
+      return true
+    end
+
+    headers = header_map(rows[0])
+    prev_col = header_col(headers, '직전좌표', 'B')
+
+    rows[1..].to_a.each_with_index do |row, i|
+      id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
+      next unless id.gsub('@', '').strip == acct
+
+      write(GRID_PREV_SHEET, "#{prev_col}#{i + 2}", [[coord]])
+      return true
+    end
+
+    append(GRID_PREV_SHEET, [acct, coord])
+    true
+  rescue => e
+    puts "[update_grid_prev 오류] #{e.class} - #{e.message}"
+    false
   end
 
   # ──────────────────────────────────────────────
