@@ -20,6 +20,7 @@ BASE_URL          = ENV['MASTODON_BASE_URL']
 TOKEN             = ENV['MASTODON_TOKEN']
 SHEET_ID          = ENV['GOOGLE_SHEET_ID']
 CREATURE_SHEET_ID = ENV['CREATURE_SHEET_ID']
+GRID_SHEET_ID     = ENV['GRID_SHEET_ID']
 CRED_PATH         = ENV['GOOGLE_APPLICATION_CREDENTIALS']
 
 if [BASE_URL, TOKEN, SHEET_ID, CRED_PATH].any? { |v| v.nil? || v.empty? }
@@ -34,7 +35,7 @@ service.authorization = Google::Auth::ServiceAccountCredentials.make_creds(
   scope: ['https://www.googleapis.com/auth/spreadsheets']
 )
 
-sheet_manager = SheetManager.new(service, SHEET_ID, CREATURE_SHEET_ID)
+sheet_manager = SheetManager.new(service, SHEET_ID, CREATURE_SHEET_ID, GRID_SHEET_ID)
 client        = MastodonClient.new(base_url: BASE_URL, token: TOKEN)
 
 begin
