@@ -146,6 +146,19 @@ class LocationCommand
     lines << "──────────────────"
     lines << location[:desc] unless location[:desc].to_s.empty?
 
+    if location[:code].to_s.upcase.match?(GRID_COORD_RE)
+      directions = grid_available_directions(location)
+      prev = @sheet_manager.find_grid_prev(@sender)
+      has_prev = prev && valid_grid_coord?(prev[:prev].to_s)
+
+      if directions.any? || has_prev
+        lines << ""
+        lines << "이동 가능한 방향:"
+        directions.each { |name| lines << "[탐사/#{name}]" }
+        lines << "[탐사/돌아가기]" if has_prev
+      end
+    end
+
     if location[:choices].to_a.any?
       lines << ""
       lines << "이동 가능한 장소:"
@@ -168,6 +181,50 @@ class LocationCommand
     end
 
     lines
+  end
+
+  # ── 격자 이동 방향 계산 (grid_move_command.rb와 동일한 좌표계 C~O, 2~8 사용) ──
+
+  def valid_grid_coord?(coord)
+    !!coord.to_s.strip.upcase.match(GRID_COORD_RE)
+  end
+
+  def grid_blocked_directions(location)
+    location[:blocked].to_s.split(/[,\s\/]+/).map(&:strip).reject(&:empty?)
+  end
+
+  def grid_neighbor_coord(coord, delta)
+    m = coord.to_s.strip.upcase.match(/\A([C-O])([2-8])\z/)
+    return nil unless m
+
+    cols = GridMoveCommand::COLS
+    rows = GridMoveCommand::ROWS
+
+    col_idx = cols.index(m[1])
+    row_idx = rows.index(m[2].to_i)
+    return nil unless col_idx && row_idx
+
+    new_col_idx = col_idx + delta[0]
+    new_row_idx = row_idx + delta[1]
+
+    return nil unless new_col_idx.between?(0, cols.length - 1)
+    return nil unless new_row_idx.between?(0, rows.length - 1)
+
+    "#{cols[new_col_idx]}#{rows[new_row_idx]}"
+  end
+
+  def grid_available_directions(location)
+    blocked = grid_blocked_directions(location)
+
+    GridMoveCommand::DIRECTIONS.each_with_object([]) do |(name, delta), list|
+      next if blocked.include?(name)
+
+      target = grid_neighbor_coord(location[:code], delta)
+      next unless target
+
+      target_location = @sheet_manager.find_location(target)
+      list << name if target_location && target_location[:public]
+    end
   end
 
   def send_threaded(lines, reply_id)
