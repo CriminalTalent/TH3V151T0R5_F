@@ -10,6 +10,7 @@ class SheetManager
   SCOUT_SHEET    = '조사상태'.freeze
   BOSS_SHEET     = '보스'.freeze
   GRID_PREV_SHEET = '격자직전위치'.freeze
+  PARTY_THREAD_SHEET = '탐사스레드'.freeze
 
   def initialize(service, sheet_id, creature_sheet_id = nil, grid_sheet_id = nil)
     @service           = service
@@ -351,6 +352,71 @@ class SheetManager
   end
 
   # ──────────────────────────────────────────────
+  # 탐사 파티 스레드([탐사/방향] 단체 멘션 전용) - 마지막 봇 메시지 ID 저장
+  #
+  # 헤더: 파티키 / 스레드ID
+  # 파티키는 참여자 계정을 정렬 후 '+'로 이어붙인 문자열.
+  # 같은 파티가 이동할 때마다 이 스레드ID에 이어서 답장하면
+  # 그룹 DM 전체가 하나의 스레드로 계속 이어진다.
+  # ──────────────────────────────────────────────
+
+  def find_party_thread(party_key)
+    party_key = party_key.to_s.strip
+    return nil if party_key.empty?
+
+    rows = read_from(grid_prev_sheet_id, PARTY_THREAD_SHEET, 'A:B')
+    return nil if rows.empty?
+
+    headers = header_map(rows[0])
+
+    rows[1..].to_a.each_with_index do |row, i|
+      key = first_present(cell(row, headers, '파티키'), row[0]).to_s.strip
+      next unless key == party_key
+
+      return {
+        row_num:   i + 2,
+        thread_id: first_present(cell(row, headers, '스레드ID'), row[1]).to_s.strip
+      }
+    end
+
+    nil
+  rescue => e
+    puts "[find_party_thread 오류] #{e.class} - #{e.message}"
+    nil
+  end
+
+  def update_party_thread(party_key, thread_id)
+    party_key = party_key.to_s.strip
+    thread_id = thread_id.to_s.strip
+    return false if party_key.empty?
+
+    sheet_id = grid_prev_sheet_id
+    rows = read_from(sheet_id, PARTY_THREAD_SHEET, 'A:B')
+
+    if rows.empty?
+      append_to(sheet_id, PARTY_THREAD_SHEET, [party_key, thread_id])
+      return true
+    end
+
+    headers = header_map(rows[0])
+    thread_col = header_col(headers, '스레드ID', 'B')
+
+    rows[1..].to_a.each_with_index do |row, i|
+      key = first_present(cell(row, headers, '파티키'), row[0]).to_s.strip
+      next unless key == party_key
+
+      write_to(sheet_id, PARTY_THREAD_SHEET, "#{thread_col}#{i + 2}", [[thread_id]])
+      return true
+    end
+
+    append_to(sheet_id, PARTY_THREAD_SHEET, [party_key, thread_id])
+    true
+  rescue => e
+    puts "[update_party_thread 오류] #{e.class} - #{e.message}"
+    false
+  end
+
+  # ──────────────────────────────────────────────
   # 장소
   #
   # 헤더:
@@ -429,7 +495,8 @@ class SheetManager
           desc:     cell(row, headers, '지문'),
           choices:  choices,
           public:   truthy?(cell(row, headers, '공개여부')),
-          creature: cell(row, headers, '크리쳐')
+          creature: cell(row, headers, '크리쳐'),
+          blocked:  cell(row, headers, '막힌방향')
         }
 
         target_code = canonical_code
@@ -580,7 +647,7 @@ class SheetManager
   # C = 위치
   # ──────────────────────────────────────────────
 
-  # 조사맵 좌표계(A~M, 1~7)와 전투봇 좌표계(A~G, 1~8)는 서로 다른 체계이므로,
+  # 조사맵 좌표계(C~O, 2~8)와 전투봇 좌표계(A~G, 1~8)는 서로 다른 체계이므로,
   # 전투봇이 이해할 수 있는 좌표일 때만 위치를 함께 넘긴다. 그 외에는 크리쳐
   # 활성화만 하고 위치는 건드리지 않아 전투봇 쪽 기존 위치(또는 기본값)를 그대로 둔다.
   def battle_grid_coord?(code)
