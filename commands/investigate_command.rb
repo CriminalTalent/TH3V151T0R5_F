@@ -96,10 +96,14 @@ class InvestigateCommand
     once_taken || credit_settled
   end
 
+  GRID_COORD_RE = /\A[C-O][2-8]\z/.freeze
+
   def location_title(location)
     code = location[:code].to_s.strip
     label = location[:label].to_s.strip
     label = location[:name].to_s.strip if label.empty?
+
+    return label.empty? ? '알 수 없는 장소' : label if code.upcase.match?(GRID_COORD_RE)
 
     if code.empty?
       label
