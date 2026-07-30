@@ -6,16 +6,22 @@
 # 파티 전체에게 그룹 DM으로 안내되며 같은 스레드로 계속 이어진다.
 # 멘션 없이 혼자 쓰면 기존과 동일하게 개인 단위로 동작한다.
 #
+# 좌표 범위: C~O(13칸) × 2~8(7행), "금지된 숲" 그리드 기준.
+#
 # 기존 [위치/장소명] [조사/오브젝트명] [획득/오브젝트명] 명령어와는
 # 완전히 별개의 명령어이며, 기존 파일(location_command.rb 등)은 수정하지 않는다.
 #
 # 좌표 칸은 기존 "장소" 시트를 그대로 사용한다.
-# (위치 칸에 좌표코드 예: A1 ~ M7 을 넣어두면 기존 [조사]/[획득] 명령어가 그대로 동작함)
+# (위치 칸에 좌표코드 예: C2 ~ O8 을 넣어두면 기존 [조사]/[획득] 명령어가 그대로 동작함)
+#
+# 막힌방향: 장소 시트에 '막힌방향' 열을 추가하고 "북쪽,서쪽"처럼 적어두면,
+# 인접 칸이 있어도 해당 방향으로는 이동할 수 없고 안내 목록에도 나오지 않는다.
 
 class GridMoveCommand
   MAX_CHARS = 1000
-  COLS = ('A'..'M').to_a.freeze # 13칸
-  ROWS = (1..7).to_a.freeze     # 7칸
+  COLS = ('C'..'O').to_a.freeze # 13칸
+  ROWS = (2..8).to_a.freeze     # 7칸
+  COORD_RE = /\A([C-O])([2-8])\z/.freeze
 
   DIRECTIONS = {
     '북쪽' => [0, -1],
@@ -44,7 +50,7 @@ class GridMoveCommand
     current_coord = scout_state ? scout_state[:location].to_s.strip.upcase : ''
 
     unless valid_coord?(current_coord)
-      dm_solo("현재 위치가 격자 좌표가 아닙니다. [위치/좌표] 명령으로 먼저 격자 칸(예: A1)으로 이동해주세요.")
+      dm_solo("현재 위치가 격자 좌표가 아닙니다. [위치/좌표] 명령으로 먼저 격자 칸(예: C2)으로 이동해주세요.")
       return
     end
 
@@ -88,6 +94,13 @@ class GridMoveCommand
     delta = DIRECTIONS[@direction]
     unless delta
       dm_solo("알 수 없는 방향입니다.")
+      return
+    end
+
+    current_location = @sheet_manager.find_location(current_coord)
+
+    if blocked_directions(current_location).include?(@direction)
+      dm_solo("그 방향은 막혀 있어 갈 수 없습니다.")
       return
     end
 
@@ -151,11 +164,18 @@ class GridMoveCommand
   end
 
   def valid_coord?(coord)
-    !!coord.to_s.strip.upcase.match(/\A[A-M](?:[1-7])\z/)
+    !!coord.to_s.strip.upcase.match(COORD_RE)
+  end
+
+  # '막힌방향' 칸의 텍스트("북쪽,서쪽" 등)를 방향 이름 배열로 파싱한다.
+  def blocked_directions(location)
+    return [] unless location
+
+    location[:blocked].to_s.split(/[,\s\/]+/).map(&:strip).reject(&:empty?)
   end
 
   def neighbor_coord(coord, delta)
-    m = coord.match(/\A([A-M])([1-7])\z/)
+    m = coord.match(COORD_RE)
     return nil unless m
 
     col_idx = COLS.index(m[1])
@@ -189,8 +209,12 @@ class GridMoveCommand
     !(once_taken || credit_settled)
   end
 
-  def available_directions(coord)
+  def available_directions(coord, current_location)
+    blocked = blocked_directions(current_location)
+
     DIRECTIONS.each_with_object([]) do |(name, delta), list|
+      next if blocked.include?(name)
+
       target = neighbor_coord(coord, delta)
       next unless target
 
@@ -205,7 +229,7 @@ class GridMoveCommand
     lines << "──────────────────"
     lines << location[:desc] unless location[:desc].to_s.empty?
 
-    directions = available_directions(coord)
+    directions = available_directions(coord, location)
     prev = @sheet_manager.find_grid_prev(@sender)
     has_prev = prev && valid_coord?(prev[:prev].to_s)
 
