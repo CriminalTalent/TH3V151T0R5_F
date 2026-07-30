@@ -1,5 +1,11 @@
 # commands/location_command.rb
 # encoding: UTF-8
+#
+# [위치/장소명] [위치/장소명] @동료1 @동료2 ...
+# 멘션을 함께 쓰면 멘션된 사람 전원 + 본인이 파티가 되어 함께 이동하고,
+# 파티 전체에게 그룹 DM으로 안내되며 같은 파티가 다시 이동하면 이전 스레드에
+# 이어서 안내된다 (grid_move_command.rb와 동일한 방식, 같은 탐사스레드 시트 공유).
+# 멘션 없이 혼자 쓰면 기존과 동일하게 개인 단위로 동작한다.
 
 class LocationCommand
   MAX_CHARS = 1000
@@ -10,41 +16,39 @@ class LocationCommand
     @sender          = sender.to_s.gsub('@', '')
     @location_code   = location_code.to_s.strip
     @status          = status
+    @party           = build_party
   end
 
   def execute
     user = @sheet_manager.find_user(@sender)
     unless user
-      dm("아직 등록되지 않은 계정입니다.", @status['id'])
+      dm_solo("아직 등록되지 않은 계정입니다.")
       return
     end
 
     location = @sheet_manager.find_location(@location_code)
     unless location
-      dm("#{@location_code} 은(는) 존재하지 않는 위치입니다.", @status['id'])
+      dm_solo("#{@location_code} 은(는) 존재하지 않는 위치입니다.")
       return
     end
 
     unless location[:public]
-      dm("#{location_title(location)} 은(는) 현재 접근할 수 없는 장소입니다.", @status['id'])
+      dm_solo("#{location_title(location)} 은(는) 현재 접근할 수 없는 장소입니다.")
       return
     end
 
-    @sheet_manager.update_scout_state(@sender, {
-      location:    location[:code],
-      last_action: '이동'
-    })
+    move_party!(location[:code])
 
     if location[:creature] && !location[:creature].to_s.strip.empty?
       trigger_encounter(location)
       return
     end
 
-    send_threaded(build_lines(location), @status['id'])
+    send_party(build_lines(location))
   rescue => e
     puts "[LocationCommand 오류] #{e.class}: #{e.message}"
     puts e.backtrace.first(5)
-    dm("처리 중 오류가 발생했습니다.", @status['id']) if @status
+    dm_solo("처리 중 오류가 발생했습니다.") if @status
   end
 
   def self.build_location_message(location)
@@ -58,6 +62,39 @@ class LocationCommand
   private
 
   GRID_COORD_RE = /\A[C-O][2-8]\z/.freeze
+
+  # ── 파티 구성 ──
+
+  def build_party
+    return [@sender] unless @status
+
+    mentioned = @status['mentions'].to_a.map do |m|
+      (m['username'] || m['acct']).to_s.gsub('@', '').split('@').first.strip
+    end.reject(&:empty?)
+
+    bot_username = defined?(CommandParser) ? CommandParser::BOT_USERNAME : nil
+    mentioned = mentioned.reject { |u| bot_username && u.casecmp?(bot_username) }
+
+    ([@sender] + mentioned).uniq
+  end
+
+  def party?
+    @party.size > 1
+  end
+
+  def party_key
+    @party.sort.join('+')
+  end
+
+  # 파티 전원의 조사상태 위치를 함께 갱신한다.
+  def move_party!(coord)
+    @party.each do |acct|
+      @sheet_manager.update_scout_state(acct, {
+        location:    coord,
+        last_action: '이동'
+      })
+    end
+  end
 
   def location_title(location)
     code = location[:code].to_s.strip
@@ -111,7 +148,7 @@ class LocationCommand
     @sheet_manager.activate_creature_boss(creature_name, location[:code])
 
     runners = @sheet_manager.runners_at_location(location[:code])
-    runners = [{ acct: @sender, name: @sender }] if runners.empty?
+    runners = @party.map { |acct| { acct: acct, name: acct } } if runners.empty?
 
     tags  = runners.map { |r| "@#{r[:acct]}" }.join(' ')
     names = runners.map { |r| r[:name].to_s.empty? ? r[:acct] : r[:name] }.join(', ')
@@ -131,13 +168,15 @@ class LocationCommand
                      "━━━━━━━━━━━━━━\n" \
                      "[전투시작]"
 
-    # 조사는 DM 흐름이므로 전투 전환 안내도 같은 DM 스레드에 고정한다.
-    dm(encounter_text, @status['id'])
+    # 조사는 DM 흐름이므로 전투 전환 안내도 이번 명령의 스레드에 고정한다.
+    post(encounter_text, @status['id'])
 
-    @sheet_manager.update_scout_state(@sender, {
-      location:    location[:code],
-      last_action: '전투전환'
-    })
+    @party.each do |acct|
+      @sheet_manager.update_scout_state(acct, {
+        location:    location[:code],
+        last_action: '전투전환'
+      })
+    end
   end
 
   def build_lines(location)
@@ -145,19 +184,6 @@ class LocationCommand
     lines << "[ #{location_title(location)} ]"
     lines << "──────────────────"
     lines << location[:desc] unless location[:desc].to_s.empty?
-
-    if location[:code].to_s.upcase.match?(GRID_COORD_RE)
-      directions = grid_available_directions(location)
-      prev = @sheet_manager.find_grid_prev(@sender)
-      has_prev = prev && valid_grid_coord?(prev[:prev].to_s)
-
-      if directions.any? || has_prev
-        lines << ""
-        lines << "이동 가능한 방향:"
-        directions.each { |name| lines << "[탐사/#{name}]" }
-        lines << "[탐사/돌아가기]" if has_prev
-      end
-    end
 
     if location[:choices].to_a.any?
       lines << ""
@@ -183,59 +209,35 @@ class LocationCommand
     lines
   end
 
-  # ── 격자 이동 방향 계산 (grid_move_command.rb와 동일한 좌표계 C~O, 2~8 사용) ──
+  # ── 발송 ──
 
-  def valid_grid_coord?(coord)
-    !!coord.to_s.strip.upcase.match(GRID_COORD_RE)
+  # 파티가 2명 이상이면 파티 전용 스레드(탐사스레드 시트, grid_move_command.rb와 공유)에
+  # 이어서 보내고, 혼자면 이번 명령 상태에 답장한다.
+  def thread_anchor
+    return @status['id'] unless party?
+
+    stored = @sheet_manager.find_party_thread(party_key)
+    stored && !stored[:thread_id].to_s.strip.empty? ? stored[:thread_id] : @status['id']
   end
 
-  def grid_blocked_directions(location)
-    location[:blocked].to_s.split(/[,\s\/]+/).map(&:strip).reject(&:empty?)
+  def send_party(lines)
+    tags = @party.map { |acct| "@#{acct}" }.join(' ')
+    send_threaded(lines, thread_anchor, tags)
   end
 
-  def grid_neighbor_coord(coord, delta)
-    m = coord.to_s.strip.upcase.match(/\A([C-O])([2-8])\z/)
-    return nil unless m
-
-    cols = GridMoveCommand::COLS
-    rows = GridMoveCommand::ROWS
-
-    col_idx = cols.index(m[1])
-    row_idx = rows.index(m[2].to_i)
-    return nil unless col_idx && row_idx
-
-    new_col_idx = col_idx + delta[0]
-    new_row_idx = row_idx + delta[1]
-
-    return nil unless new_col_idx.between?(0, cols.length - 1)
-    return nil unless new_row_idx.between?(0, rows.length - 1)
-
-    "#{cols[new_col_idx]}#{rows[new_row_idx]}"
+  def dm_solo(text)
+    post("@#{@sender} #{text}", @status['id'])
   end
 
-  def grid_available_directions(location)
-    blocked = grid_blocked_directions(location)
-
-    GridMoveCommand::DIRECTIONS.each_with_object([]) do |(name, delta), list|
-      next if blocked.include?(name)
-
-      target = grid_neighbor_coord(location[:code], delta)
-      next unless target
-
-      target_location = @sheet_manager.find_location(target)
-      list << name if target_location && target_location[:public]
-    end
-  end
-
-  def send_threaded(lines, reply_id)
+  def send_threaded(lines, reply_id, header_tags)
     chunks = []
-    current = "@#{@sender}"
+    current = header_tags
 
     lines.each do |line|
       candidate = "#{current}\n#{line}"
       if candidate.length > MAX_CHARS
         chunks << current unless current.strip.empty?
-        current = "@#{@sender}\n#{line}"
+        current = "#{header_tags}\n#{line}"
       else
         current = candidate
       end
@@ -243,15 +245,17 @@ class LocationCommand
 
     chunks << current unless current.strip.empty?
 
+    last_id = reply_id
     chunks.each do |chunk|
-      dm(chunk, reply_id)
-      # MastodonClient가 HTTPResponse를 반환하지 않는 구조에서도 안전하게 동작하도록
-      # res.body 파싱을 하지 않는다. 스레드의 첫 원글에 계속 답글로 단다.
+      response = post(chunk, last_id)
+      last_id = response['id'] if response && response['id']
       sleep 0.5
     end
+
+    @sheet_manager.update_party_thread(party_key, last_id) if party? && last_id
   end
 
-  def dm(text, reply_id)
+  def post(text, reply_id)
     @mastodon_client.post_status(
       text,
       reply_to_id: reply_id,
