@@ -128,7 +128,7 @@ class SheetManager
       id = cell(row, headers, 'ID')
       id = row[0].to_s.strip if id.empty?
 
-      next unless id.gsub('@', '').strip == acct
+      next unless id.gsub('@', '').strip.casecmp?(acct)
 
       return {
         row_num: i + 2,
@@ -164,7 +164,7 @@ class SheetManager
       id = cell(row, headers, 'ID')
       id = row[0].to_s.strip if id.empty?
 
-      next unless id.gsub('@', '').strip == acct
+      next unless id.gsub('@', '').strip.casecmp?(acct)
 
       row_num = i + 2
 
@@ -211,7 +211,7 @@ class SheetManager
 
     rows[1..].to_a.each_with_index do |row, i|
       id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
-      next unless id.gsub('@', '').strip == acct
+      next unless id.gsub('@', '').strip.casecmp?(acct)
 
       return {
         row_num:     i + 2,
@@ -242,7 +242,7 @@ class SheetManager
 
     rows[1..].to_a.each_with_index do |row, i|
       id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
-      next unless id.gsub('@', '').strip == acct
+      next unless id.gsub('@', '').strip.casecmp?(acct)
 
       row_num = i + 2
 
@@ -306,7 +306,7 @@ class SheetManager
 
     rows[1..].to_a.each_with_index do |row, i|
       id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
-      next unless id.gsub('@', '').strip == acct
+      next unless id.gsub('@', '').strip.casecmp?(acct)
 
       return {
         row_num: i + 2,
@@ -338,7 +338,7 @@ class SheetManager
 
     rows[1..].to_a.each_with_index do |row, i|
       id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
-      next unless id.gsub('@', '').strip == acct
+      next unless id.gsub('@', '').strip.casecmp?(acct)
 
       write_to(sheet_id, GRID_PREV_SHEET, "#{prev_col}#{i + 2}", [[coord]])
       return true
