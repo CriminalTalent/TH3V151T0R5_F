@@ -141,14 +141,23 @@ class LocationCommand
     !(once_taken || credit_settled)
   end
 
+  # 파티 전원의 표시이름을 사용자 시트에서 조회한다.
+  # (방금 갱신한 조사상태를 다시 읽는 runners_at_location보다 신뢰도가 높다)
+  def party_runners
+    @party.map do |acct|
+      user = @sheet_manager.find_user(acct)
+      name = user && !user[:name].to_s.strip.empty? ? user[:name] : acct
+      { acct: acct, name: name }
+    end
+  end
+
   def trigger_encounter(location)
     creature_name = location[:creature].to_s.strip
     creature_name = '크리쳐' if creature_name.empty?
 
     @sheet_manager.activate_creature_boss(creature_name, location[:code])
 
-    runners = @sheet_manager.runners_at_location(location[:code])
-    runners = @party.map { |acct| { acct: acct, name: acct } } if runners.empty?
+    runners = party_runners
 
     tags  = runners.map { |r| "@#{r[:acct]}" }.join(' ')
     names = runners.map { |r| r[:name].to_s.empty? ? r[:acct] : r[:name] }.join(', ')
