@@ -504,13 +504,16 @@ class SheetManager
       item_field = cell(row, headers, '획득아이템')
 
       # 오브젝트명(K열)이 비어있어도 획득아이템(M열)만 채워져 있으면
-      # 그 아이템명을 오브젝트명으로 삼아 인식한다.
+      # 그 아이템명을 오브젝트명으로 삼아 인식한다. 이 경우 named: false로
+      # 표시해, 안내 문구에서 "[조사]"를 권하지 않도록 구분한다
+      # (K열이 비어있으면 조사결과도 없어 조사할 대상 자체가 없기 때문).
       effective_name = obj_name.empty? ? item_field.split(',').first.to_s.strip : obj_name
       next if effective_name.empty?
 
       objects << {
         location:         target_code,
         name:             effective_name,
+        named:            !obj_name.empty?,
         result:           cell(row, headers, '조사결과'),
         item:             item_field,
         once:             truthy?(cell(row, headers, '1회한정')),
