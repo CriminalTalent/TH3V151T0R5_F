@@ -248,7 +248,12 @@ class GridMoveCommand
       visible_objects.each do |obj|
         lines << "・ #{obj[:name]}"
       end
-      lines << "[획득/아이템명] 으로 바로 가져갈 수 있고, [조사/오브젝트명] 으로 자세히 살펴볼 수 있습니다."
+
+      if visible_objects.any? { |obj| obj[:named] }
+        lines << "[획득/아이템명] 으로 바로 가져갈 수 있고, [조사/오브젝트명] 으로 자세히 살펴볼 수 있습니다."
+      else
+        lines << "[획득/아이템명] 으로 바로 가져갈 수 있습니다."
+      end
     end
 
     lines
