@@ -28,7 +28,9 @@ class SheetManager
   end
 
   def read_from(sheet_id, sheet, range = 'A:Z')
-    @service.get_spreadsheet_values(sheet_id, "#{sheet}!#{range}").values || []
+    with_retry("읽기 #{sheet}!#{range}") do
+      @service.get_spreadsheet_values(sheet_id, "#{sheet}!#{range}").values || []
+    end
   rescue => e
     puts "[시트 읽기 오류] #{sheet}!#{range}: #{e.class} - #{e.message}"
     []
@@ -41,12 +43,14 @@ class SheetManager
   def write_to(sheet_id, sheet, range, values)
     body = Google::Apis::SheetsV4::ValueRange.new(values: values)
 
-    @service.update_spreadsheet_value(
-      sheet_id,
-      "#{sheet}!#{range}",
-      body,
-      value_input_option: 'USER_ENTERED'
-    )
+    with_retry("쓰기 #{sheet}!#{range}") do
+      @service.update_spreadsheet_value(
+        sheet_id,
+        "#{sheet}!#{range}",
+        body,
+        value_input_option: 'USER_ENTERED'
+      )
+    end
 
     true
   rescue => e
@@ -61,17 +65,41 @@ class SheetManager
   def append_to(sheet_id, sheet, row)
     body = Google::Apis::SheetsV4::ValueRange.new(values: [row])
 
-    @service.append_spreadsheet_value(
-      sheet_id,
-      "#{sheet}!A:Z",
-      body,
-      value_input_option: 'USER_ENTERED'
-    )
+    with_retry("추가 #{sheet}") do
+      @service.append_spreadsheet_value(
+        sheet_id,
+        "#{sheet}!A:Z",
+        body,
+        value_input_option: 'USER_ENTERED'
+      )
+    end
 
     true
   rescue => e
     puts "[시트 추가 오류] #{sheet}: #{e.class} - #{e.message}"
     false
+  end
+
+  # 429 / 할당량 초과(RateLimitError) 등 일시적 오류에 대해 최대 3회
+  # 재시도한다. 재시도 없이 바로 실패로 처리하면, 사람이 몰려 순간적으로
+  # 할당량을 초과했을 때 실제로는 존재하는 계정/위치/오브젝트를 "없음"으로
+  # 오판하는 문제가 생긴다 (등록 안 된 계정 오탐, 아이템 획득 실패, 파티
+  # 스레드 유실 등).
+  def with_retry(label, max_retries: 3)
+    attempt = 0
+    begin
+      yield
+    rescue Google::Apis::RateLimitError, Google::Apis::ServerError, Google::Apis::TransmissionError => e
+      attempt += 1
+      if attempt <= max_retries
+        wait_seconds = 1.5 * attempt
+        puts "[시트 재시도] #{label}: #{e.class} - #{wait_seconds}초 후 재시도 (#{attempt}/#{max_retries})"
+        sleep(wait_seconds)
+        retry
+      else
+        raise
+      end
+    end
   end
 
   # ──────────────────────────────────────────────
