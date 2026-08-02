@@ -423,6 +423,16 @@ class SheetManager
   # 위치 / 이름 / 지문 / 선택지1~선택지6 / 공개여부
   # 오브젝트명 / 조사결과 / 획득아이템 / 1회한정 / 획득자ID
   # 크레딧 / 크레딧수령자ID / 크레딧대사 / 크리쳐
+  #
+  # 행 구조: 위치 칸이 채워진 행이 "헤더 행"(그 위치 자체)이며,
+  # 바로 뒤에 위치 칸이 비어있는 행들이 이어지면 그 헤더 행에 속한
+  # 하위 오브젝트 행으로 취급한다. 위치 칸이 다시 채워진 행이 나오면
+  # 새로운 위치로 넘어간 것으로 보고 이전 그룹은 종료한다.
+  #
+  # 주의: 같은 "이름"을 여러 좌표가 재사용하는 경우(예: "텅 빈 공터"가
+  # 여러 칸에 반복 사용)가 있으므로, 오브젝트 그룹핑은 반드시 좌표(또는
+  # 명시적 위치 칸) 기준으로만 하고 이름으로는 하지 않는다. 이름으로
+  # 그룹핑하면 이름이 같은 다른 칸의 오브젝트/아이템이 섞여 들어온다.
   # ──────────────────────────────────────────────
 
   def find_location(location_code)
@@ -447,71 +457,62 @@ class SheetManager
     query_upper = query.upcase
 
     resolved = location_lookup[query_upper] || location_lookup[query]
-    target_code = resolved ? resolved[:code].to_s.strip : query_upper
-    target_name = resolved ? resolved[:label].to_s.strip : query
+    target_code = (resolved ? resolved[:code] : query_upper).to_s.strip.upcase
 
     result = nil
     objects = []
-    current_code = ''
-    current_name = ''
+    in_group = false
 
     rows[1..].to_a.each do |row|
       row_code = cell(row, headers, '위치').upcase
       row_name = cell(row, headers, '이름')
       canonical_code = row_code.empty? ? row_name : row_code
       canonical_code = canonical_code.to_s.strip
-      canonical_code_upper = canonical_code.upcase
 
-      unless canonical_code.empty?
-        current_code = canonical_code
-        current_name = row_name.empty? ? canonical_code : row_name
-      end
+      if !canonical_code.empty?
+        # 위치 칸이 채워진 행 = 새 위치의 시작. 이전 그룹은 여기서 끝난다.
+        if canonical_code.upcase == target_code
+          in_group = true
 
-      row_matches =
-        (!row_code.empty? && row_code == target_code.to_s.upcase) ||
-        (!row_name.empty? && row_name == query) ||
-        (!row_name.empty? && row_name == target_name) ||
-        (!canonical_code.empty? && canonical_code_upper == target_code.to_s.upcase)
+          choices = []
+          (1..6).each do |n|
+            raw = cell(row, headers, "선택지#{n}")
+            next if raw.empty?
 
-      if row_matches
-        choices = []
+            resolved_choice = resolve_location_choice(raw, location_lookup)
+            choices << { code: resolved_choice[:code], label: resolved_choice[:label] }
+          end
 
-        (1..6).each do |n|
-          raw = cell(row, headers, "선택지#{n}")
-          next if raw.empty?
-
-          resolved_choice = resolve_location_choice(raw, location_lookup)
-
-          choices << {
-            code:  resolved_choice[:code],
-            label: resolved_choice[:label]
+          result = {
+            code:     canonical_code,
+            name:     row_name,
+            label:    row_name.empty? ? canonical_code : row_name,
+            desc:     cell(row, headers, '지문'),
+            choices:  choices,
+            public:   truthy?(cell(row, headers, '공개여부')),
+            creature: cell(row, headers, '크리쳐'),
+            blocked:  cell(row, headers, '막힌방향')
           }
+        else
+          in_group = false
         end
-
-        result = {
-          code:     canonical_code,
-          name:     row_name,
-          label:    row_name.empty? ? canonical_code : row_name,
-          desc:     cell(row, headers, '지문'),
-          choices:  choices,
-          public:   truthy?(cell(row, headers, '공개여부')),
-          creature: cell(row, headers, '크리쳐'),
-          blocked:  cell(row, headers, '막힌방향')
-        }
-
-        target_code = canonical_code
       end
 
-      next unless current_code.to_s.upcase == target_code.to_s.upcase || current_name == query || current_name == target_name
+      next unless in_group
 
       obj_name = cell(row, headers, '오브젝트명')
-      next if obj_name.empty?
+      item_field = cell(row, headers, '획득아이템')
+
+      # 오브젝트명(K열)이 비어있어도 획득아이템(M열)만 채워져 있으면
+      # 그 아이템명을 오브젝트명으로 삼아 인식한다.
+      effective_name = obj_name.empty? ? item_field.split(',').first.to_s.strip : obj_name
+      next if effective_name.empty?
 
       objects << {
-        location:         current_code,
-        name:             obj_name,
+        location:         target_code,
+        name:             effective_name,
         result:           cell(row, headers, '조사결과'),
-        item:             cell(row, headers, '획득아이템'),
+        item:             item_field,
         once:             truthy?(cell(row, headers, '1회한정')),
         taken_by:         cell(row, headers, '획득자ID'),
         credit:           cell(row, headers, '크레딧').gsub(/[^\-0-9]/, '').to_i,
