@@ -8,6 +8,7 @@ require_relative 'commands/acquire_command'
 require_relative 'commands/scout_start_command'
 require_relative 'commands/scout_end_command'
 require_relative 'commands/grid_move_command'
+require_relative 'commands/join_command'
 
 module CommandParser
   BOT_USERNAME    = (ENV['BOT_USERNAME'] || 'DOWN').freeze
@@ -44,6 +45,9 @@ module CommandParser
 
     when /\[탐사\/(북쪽|남쪽|동쪽|서쪽|돌아가기)\]/
       GridMoveCommand.new(sheet_manager, mastodon_client, sender, $1.strip, status).execute
+
+    when /\[합류\/(.+?)\]/
+      JoinCommand.new(sheet_manager, mastodon_client, sender, $1.strip, status).execute
 
     else
       return
