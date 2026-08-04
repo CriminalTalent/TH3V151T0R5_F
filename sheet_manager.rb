@@ -693,34 +693,29 @@ class SheetManager
 
     return false if creature_name.empty?
 
-    # 1순위: 크리쳐 시트의 스탯 탭에서 이름이 같은 행을 활성화한다.
+    # 크리쳐 시트의 스탯 탭에서 이름이 같은 행을 활성화한다.
+    # (구버전 '보스' 탭 폴백은 제거했습니다 — 해당 탭이 시트에 더 이상
+    # 존재하지 않아 매칭 실패 시마다 badRequest만 발생시키며 API 호출만
+    # 낭비하고 있었습니다. README/STANDARD 상으로도 '보스 탭 사용 안 함'이
+    # 이미 확정된 사양입니다.)
     rows = read_from(@creature_sheet_id, '스탯', 'A:Z')
-    unless rows.empty?
-      headers = header_map(rows[0])
-      active_col = header_col(headers, '활성', 'A')
-      location_col = header_col(headers, '위치', 'C')
+    return false if rows.empty?
 
-      rows[1..].to_a.each_with_index do |row, i|
-        name = cell(row, headers, '이름')
-        next unless name == creature_name
+    headers = header_map(rows[0])
+    active_col = header_col(headers, '활성', 'A')
+    location_col = header_col(headers, '위치', 'C')
 
-        row_num = i + 2
-        write_to(@creature_sheet_id, '스탯', "#{active_col}#{row_num}", [[true]])
-        write_to(@creature_sheet_id, '스탯', "#{location_col}#{row_num}", [[battle_pos]]) unless battle_pos.empty?
-        return true
-      end
+    rows[1..].to_a.each_with_index do |row, i|
+      name = cell(row, headers, '이름')
+      next unless name == creature_name
+
+      row_num = i + 2
+      write_to(@creature_sheet_id, '스탯', "#{active_col}#{row_num}", [[true]])
+      write_to(@creature_sheet_id, '스탯', "#{location_col}#{row_num}", [[battle_pos]]) unless battle_pos.empty?
+      return true
     end
 
-    # 2순위: 구버전 보스 탭이 존재하는 경우만 사용한다.
-    boss_rows = read_from(@creature_sheet_id, BOSS_SHEET, 'A:C')
-    return false if boss_rows.empty?
-
-    write_to(
-      @creature_sheet_id,
-      BOSS_SHEET,
-      'A2:C2',
-      [[true, creature_name, battle_pos]]
-    )
+    false
   rescue => e
     puts "[activate_creature_boss 오류] #{e.class} - #{e.message}"
     false
