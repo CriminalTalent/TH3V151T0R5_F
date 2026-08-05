@@ -8,7 +8,6 @@ class MastodonClient
   def initialize(base_url:, token:)
     @base_url = base_url.to_s.sub(%r{/\z}, '')
     @token    = token.to_s
-    @post_block_until = Time.at(0)
   end
 
   def safe_utf8(str)
@@ -48,17 +47,41 @@ class MastodonClient
     body.is_a?(Array) ? body : []
   end
 
-  def post_status(text, reply_to_id: nil, visibility: 'direct', media_ids: [])
-    return if Time.now < @post_block_until
+  # 429 처리: 룰 10과 동일하게 Retry-After(있으면 그 값, 없으면 5초×시도횟수)로
+  # 최대 3회까지 재시도하고, 소진되면 실패로 기록하고 nil을 반환한다.
+  # 예전처럼 한 번의 429로 10분간 모든 후속 게시를 통째로 버리지 않는다 —
+  # 그 10분 동안 DM 답장이 전부 조용히 유실되는 문제가 있었음.
+  def post_status(text, reply_to_id: nil, visibility: 'direct', media_ids: [], max_attempts: 3)
     form = { status: safe_utf8(text), visibility: visibility }
     form[:in_reply_to_id] = reply_to_id if reply_to_id
     Array(media_ids).each_with_index { |id, i| form["media_ids[#{i}]"] = id }
-    res, _ = request(method: :post, path: "/api/v1/statuses", form: form)
-    if res&.code.to_s == '429'
-      @post_block_until = Time.now + 600
-      puts "[POST] rate limit"
+
+    attempt = 0
+    loop do
+      attempt += 1
+      res, _ = request(method: :post, path: "/api/v1/statuses", form: form)
+
+      if res.nil?
+        # 네트워크 레벨 오류는 request()에서 이미 로그를 남겼으므로 그대로 실패 반환
+        return nil
+      end
+
+      if res.code.to_s == '429'
+        retry_after = (res['Retry-After'] || res['retry-after']).to_s.to_f
+        wait = retry_after.positive? ? retry_after : (5.0 * attempt)
+
+        if attempt < max_attempts
+          puts "[POST] rate limit - #{wait}초 후 재시도 (#{attempt}/#{max_attempts})"
+          sleep(wait)
+          next
+        else
+          puts "[POST] rate limit 재시도 소진 (#{max_attempts}회) — 게시 실패로 기록"
+          return nil
+        end
+      end
+
+      return res
     end
-    res
   end
 
   def broadcast(text, visibility: 'public')
