@@ -217,7 +217,6 @@ class SheetManager
     return nil unless user
 
     new_credits = user[:credits].to_i + delta.to_i
-    new_credits = 0 if new_credits < 0
 
     update_user(acct, { credits: new_credits })
     new_credits

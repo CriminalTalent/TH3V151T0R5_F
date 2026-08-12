@@ -219,18 +219,32 @@ class LocationCommand
 
     visible_objects = location[:objects].to_a.select { |obj| visible_object?(obj) }
 
-    if visible_objects.any?
+    # 오브젝트명이 있는(named) 항목 = 조사가 필요한 대상.
+    # 이 항목에 딸린 아이템은 조사(InvestigateCommand)를 거쳐야만 노출된다.
+    investigate_points = visible_objects.select { |obj| obj[:named] }
+
+    # 오브젝트명이 없는(named: false) 항목 = 조사 없이 바로 보이는 아이템.
+    direct_items = visible_objects
+      .reject { |obj| obj[:named] }
+      .flat_map { |obj| obj[:item].to_s.split(',').map(&:strip).reject(&:empty?) }
+      .uniq
+
+    if investigate_points.any?
       lines << ""
-      lines << "주변에서 발견한 것들:"
-      visible_objects.each do |obj|
+      lines << "조사할 수 있는 것들:"
+      investigate_points.each do |obj|
         lines << "・ #{obj[:name]}"
       end
+      lines << "[조사/오브젝트명] 으로 자세히 살펴볼 수 있습니다."
+    end
 
-      if visible_objects.any? { |obj| obj[:named] }
-        lines << "[획득/아이템명] 으로 바로 가져갈 수 있고, [조사/오브젝트명] 으로 자세히 살펴볼 수 있습니다."
-      else
-        lines << "[획득/아이템명] 으로 바로 가져갈 수 있습니다."
+    if direct_items.any?
+      lines << ""
+      lines << "획득할 수 있는 것들:"
+      direct_items.each do |item|
+        lines << "・ #{item}"
       end
+      lines << "[획득/아이템명] 으로 바로 가져갈 수 있습니다."
     end
 
     lines
