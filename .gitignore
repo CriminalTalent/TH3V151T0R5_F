@@ -5,3 +5,4 @@ credentials.json
 last_mention_id.txt
 *.log
 *.bak*
+credentials.json.*

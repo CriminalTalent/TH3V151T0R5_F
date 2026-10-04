@@ -20,8 +20,8 @@
 class GridMoveCommand
   MAX_CHARS = 1000
   COLS = ('C'..'O').to_a.freeze # 13칸
-  ROWS = (2..8).to_a.freeze     # 7칸
-  COORD_RE = /\A([C-O])([2-8])\z/.freeze
+  ROWS = ((2..8).to_a + (10..16).to_a).freeze # 7칸 + 6칸 (9는 구획 구분용으로 비움)
+  COORD_RE = /\A([C-O])([2-8]|1[0-6])\z/.freeze
 
   DIRECTIONS = {
     '북쪽' => [0, -1],
@@ -154,13 +154,11 @@ class GridMoveCommand
 
   # 파티 전원의 조사상태/직전좌표를 함께 갱신한다.
   def move_party!(from_coord, to_coord)
-    @party.each do |acct|
-      @sheet_manager.update_grid_prev(acct, from_coord)
-      @sheet_manager.update_scout_state(acct, {
-        location:    to_coord,
-        last_action: '이동'
-      })
-    end
+    @party.each { |acct| @sheet_manager.update_grid_prev(acct, from_coord) }
+    @sheet_manager.update_scout_states_batch(@party, {
+      location:    to_coord,
+      last_action: '이동'
+    })
   end
 
   def valid_coord?(coord)
@@ -172,6 +170,17 @@ class GridMoveCommand
     return [] unless location
 
     location[:blocked].to_s.split(/[,\s\/]+/).map(&:strip).reject(&:empty?)
+  end
+
+  # 행 9는 존재하지 않으며, 2~8 구역과 10~15 구역은 서로 다른 미로로
+  # 완전히 분리된다. 두 구역을 잇는 특별 경로가 필요하면 이 zone 체크에
+  # 예외를 추가할 것 — 기본값은 항상 분리(이동 불가)다.
+  def self.zone_of(row)
+    row.to_i <= 8 ? :zone1 : :zone2
+  end
+
+  def zone_of(row)
+    self.class.zone_of(row)
   end
 
   def neighbor_coord(coord, delta)
@@ -187,6 +196,7 @@ class GridMoveCommand
 
     return nil unless new_col_idx.between?(0, COLS.length - 1)
     return nil unless new_row_idx.between?(0, ROWS.length - 1)
+    return nil if zone_of(m[2].to_i) != zone_of(ROWS[new_row_idx])
 
     "#{COLS[new_col_idx]}#{ROWS[new_row_idx]}"
   end
@@ -211,15 +221,18 @@ class GridMoveCommand
 
   def available_directions(coord, current_location)
     blocked = blocked_directions(current_location)
-
-    DIRECTIONS.each_with_object([]) do |(name, delta), list|
+    candidates = {}
+    DIRECTIONS.each do |name, delta|
       next if blocked.include?(name)
-
       target = neighbor_coord(coord, delta)
-      next unless target
+      candidates[name] = target if target
+    end
+    return [] if candidates.empty?
 
-      target_location = @sheet_manager.find_location(target)
-      list << name if target_location && target_location[:public]
+    lookup = @sheet_manager.find_cells_public_batch(candidates.values)
+    candidates.each_with_object([]) do |(name, target), list|
+      info = lookup[target.to_s.strip.upcase]
+      list << name if info && info[:public]
     end
   end
 
@@ -299,12 +312,10 @@ class GridMoveCommand
     # 현재 명령의 스레드에 이어 보낸다.
     post(encounter_text, thread_anchor)
 
-    @party.each do |acct|
-      @sheet_manager.update_scout_state(acct, {
-        location:    location[:code],
-        last_action: '전투전환'
-      })
-    end
+    @sheet_manager.update_scout_states_batch(@party, {
+      location:    location[:code],
+      last_action: '전투전환'
+    })
   end
 
   # ── 발송 ──
@@ -354,11 +365,16 @@ class GridMoveCommand
   end
 
   def post(text, reply_id)
-    @mastodon_client.post_status(
+    result = @mastodon_client.post_status(
       text,
       reply_to_id: reply_id,
       visibility: 'direct'
     )
+    # post_status가 예외 없이 nil을 반환하는 경우(예: 429 재시도 소진)도 있어,
+    # 이 경우는 rescue가 안 걸려 응답이 조용히 사라지던 문제가 있었다.
+    # 추적을 위해 명시적으로 경고 로그를 남긴다.
+    puts "[GridMoveCommand 게시 실패] post_status가 nil을 반환함 (reply_id=#{reply_id})" unless result
+    result
   rescue => e
     puts "[GridMoveCommand DM 오류] #{e.class}: #{e.message}"
     nil

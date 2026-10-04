@@ -19,23 +19,65 @@ class MastodonClient
   end
 
   def request(method:, path:, params: {}, form: nil, headers: {})
-    uri = URI.join(@base_url, path)
-    uri.query = URI.encode_www_form(params) if method == :get && params&.any?
-    base_headers = { "Authorization" => "Bearer #{@token}" }.merge(headers || {})
-    req = case method
-          when :get  then Net::HTTP::Get.new(uri, base_headers)
-          when :post
-            r = Net::HTTP::Post.new(uri, base_headers)
-            r.set_form_data(form) if form
-            r
-          end
-    res = Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == 'https',
-                          open_timeout: 10, read_timeout: 30) { |http| http.request(req) }
-    body = JSON.parse(res.body) rescue {}
-    [res, body]
-  rescue => e
-    puts "[HTTP 오류] #{e.class} - #{e.message}"
-    [nil, {}]
+    attempt = 0
+
+    begin
+      attempt += 1
+
+      uri = URI.join(@base_url, path)
+      uri.query = URI.encode_www_form(params) if method == :get && params&.any?
+      base_headers = { "Authorization" => "Bearer #{@token}" }.merge(headers || {})
+
+      req = case method
+            when :get
+              Net::HTTP::Get.new(uri, base_headers)
+            when :post
+              r = Net::HTTP::Post.new(uri, base_headers)
+              r.set_form_data(form) if form
+              r
+            end
+
+      res = Net::HTTP.start(
+        uri.host,
+        uri.port,
+        use_ssl: uri.scheme == 'https',
+        open_timeout: 10,
+        read_timeout: 30
+      ) { |http| http.request(req) }
+
+      body = JSON.parse(res.body) rescue {}
+      [res, body]
+
+    rescue Net::OpenTimeout => e
+      puts "[HTTP 오류] #{method.to_s.upcase} #{path} / #{e.class} - #{e.message}"
+
+      if attempt < 3
+        wait = 1.5 * attempt
+        puts "[HTTP 재시도] 연결 타임아웃 - #{wait}초 후 재시도 (#{attempt}/3)"
+        sleep(wait)
+        retry
+      end
+
+      [nil, {}]
+
+    rescue Net::ReadTimeout => e
+      puts "[HTTP 오류] #{method.to_s.upcase} #{path} / #{e.class} - #{e.message}"
+
+      # GET은 재시도해도 부작용이 없지만,
+      # POST는 서버가 이미 게시를 완료했을 가능성이 있어 중복 게시 방지를 위해 재시도하지 않는다.
+      if method == :get && attempt < 3
+        wait = 1.5 * attempt
+        puts "[HTTP 재시도] 읽기 타임아웃(GET) - #{wait}초 후 재시도 (#{attempt}/3)"
+        sleep(wait)
+        retry
+      end
+
+      [nil, {}]
+
+    rescue StandardError => e
+      puts "[HTTP 오류] #{method.to_s.upcase} #{path} / #{e.class} - #{e.message}"
+      [nil, {}]
+    end
   end
 
   def notifications(limit: 30, since_id: nil)
@@ -59,10 +101,10 @@ class MastodonClient
     attempt = 0
     loop do
       attempt += 1
-      res, _ = request(method: :post, path: "/api/v1/statuses", form: form)
+      res, body = request(method: :post, path: "/api/v1/statuses", form: form)
 
       if res.nil?
-        # 네트워크 레벨 오류는 request()에서 이미 로그를 남겼으므로 그대로 실패 반환
+        puts "[POST] 네트워크 오류 재시도 소진 — 게시 실패"
         return nil
       end
 
@@ -80,7 +122,7 @@ class MastodonClient
         end
       end
 
-      return res
+      return body
     end
   end
 

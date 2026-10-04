@@ -7,6 +7,7 @@ require 'googleauth'
 class SheetManager
   USERS_SHEET    = '사용자'.freeze
   LOCATION_SHEET = '장소'.freeze
+  EXTRA_LOCATION_SHEET = '추가'.freeze
   SCOUT_SHEET    = '조사상태'.freeze
   BOSS_SHEET     = '보스'.freeze
   GRID_PREV_SHEET = '격자직전위치'.freeze
@@ -55,6 +56,31 @@ class SheetManager
     true
   rescue => e
     puts "[시트 쓰기 오류] #{sheet}!#{range}: #{e.class} - #{e.message}"
+    false
+  end
+
+  # 여러 셀을 한 번의 API 호출로 함께 쓴다. range_value_pairs는
+  # [[범위문자열, [[값]]], ...] 형태.
+  def write_batch(sheet, range_value_pairs)
+    write_batch_to(@sheet_id, sheet, range_value_pairs)
+  end
+
+  def write_batch_to(sheet_id, sheet, range_value_pairs)
+    return true if range_value_pairs.empty?
+
+    data = range_value_pairs.map do |range, values|
+      Google::Apis::SheetsV4::ValueRange.new(range: "#{sheet}!#{range}", values: values)
+    end
+    request = Google::Apis::SheetsV4::BatchUpdateValuesRequest.new(
+      value_input_option: 'USER_ENTERED',
+      data: data
+    )
+    with_retry("배치 쓰기 #{sheet} (#{range_value_pairs.size}건)") do
+      @service.batch_update_values(sheet_id, request)
+    end
+    true
+  rescue => e
+    puts "[시트 배치 쓰기 오류] #{sheet}: #{e.class} - #{e.message}"
     false
   end
 
@@ -125,7 +151,7 @@ class SheetManager
     idx = headers[normalize_header(name)]
     return '' if idx.nil?
 
-    row[idx].to_s.strip
+    normalize_location_value(row[idx])
   end
 
   def truthy?(value)
@@ -254,6 +280,40 @@ class SheetManager
     nil
   end
 
+  # 여러 계정의 조사상태를 시트 1회 읽기로 한꺼번에 조회한다.
+  # (파티원 수만큼 find_scout_state를 반복 호출하면 그 수만큼 시트 전체를
+  # 매번 다시 읽게 되어 파티 인원이 많을수록 응답이 느려짐 — 2026-08-13
+  # 전투불능 체크 추가 후 발견된 지연 원인. 이 메서드로 1회 조회로 대체.)
+  def find_scout_states(accts)
+    wanted = accts.to_a.map { |a| a.to_s.gsub('@', '').strip }
+    result = {}
+    return result if wanted.empty?
+
+    rows = read(SCOUT_SHEET, 'A:Z')
+    return result if rows.empty?
+
+    headers = header_map(rows[0])
+
+    rows[1..].to_a.each_with_index do |row, i|
+      id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
+      norm_id = id.gsub('@', '').strip
+      match = wanted.find { |w| norm_id.casecmp?(w) }
+      next unless match
+
+      result[match] = {
+        row_num:     i + 2,
+        id:          id,
+        location:    first_present(cell(row, headers, '위치'), row[1]).to_s.strip,
+        last_action: first_present(cell(row, headers, '최근행동'), cell(row, headers, 'last_action'), row[2]).to_s.strip
+      }
+    end
+
+    result
+  rescue => e
+    puts "[find_scout_states 오류] #{e.class} - #{e.message}"
+    {}
+  end
+
   def update_scout_state(acct, attrs)
     acct = acct.to_s.gsub('@', '').strip
     rows = read(SCOUT_SHEET, 'A:Z')
@@ -279,10 +339,100 @@ class SheetManager
       return true
     end
 
+    # 추가 직전 한 번 더 최신 상태를 확인한다 (동시에 여러 명령이 겹치면
+    # 둘 다 "없음"으로 판단해 중복 행을 만드는 경쟁 조건을 줄이기 위함).
+    fresh_rows = read(SCOUT_SHEET, 'A:Z')
+    if fresh_rows[0]
+      fresh_headers = header_map(fresh_rows[0])
+      fresh_location_col = header_col(fresh_headers, '위치', 'B')
+      fresh_action_col   = header_col(fresh_headers, '최근행동', 'C')
+      fresh_rows[1..].to_a.each_with_index do |row, i|
+        id = first_present(cell(row, fresh_headers, 'ID'), row[0]).to_s.strip
+        next unless id.gsub('@', '').strip.casecmp?(acct)
+        row_num = i + 2
+        write(SCOUT_SHEET, "#{fresh_location_col}#{row_num}", [[attrs[:location].to_s]]) if attrs.key?(:location)
+        write(SCOUT_SHEET, "#{fresh_action_col}#{row_num}", [[attrs[:last_action].to_s]]) if attrs.key?(:last_action)
+        return true
+      end
+    end
+
     append(SCOUT_SHEET, [acct, attrs[:location].to_s, attrs[:last_action].to_s])
     true
   rescue => e
     puts "[update_scout_state 오류] #{e.class} - #{e.message}"
+    false
+  end
+
+  # 파티 전원의 조사상태를 한 번의 읽기 + 한 번의 배치 쓰기로 갱신한다.
+  # (update_scout_state를 파티원 수만큼 반복 호출하면 각각 전체 시트를
+  # 다시 읽고 셀마다 따로 쓰게 되어, 파티 5명이면 최대 15회까지 API를 호출하게 되던 문제를 개선.
+  # 이제는 읽기 1회 + 배치 쓰기 1회로 파티 인원과 무관하게 고정된다.)
+  def normalize_location_value(value)
+    value.to_s.gsub("\u00A0", " ").gsub(/\s+/, ' ').strip
+  end
+
+  def update_scout_states_batch(accounts, attrs)
+    accounts = accounts.to_a.map { |a| a.to_s.gsub('@', '').strip }.uniq
+    return true if accounts.empty?
+    attrs = attrs.dup
+    attrs[:location] = normalize_location_value(attrs[:location]) if attrs.key?(:location)
+
+    rows = read(SCOUT_SHEET, 'A:Z')
+
+    if rows.empty?
+      accounts.each { |acct| append(SCOUT_SHEET, [acct, attrs[:location].to_s, attrs[:last_action].to_s]) }
+      return true
+    end
+
+    headers = header_map(rows[0])
+    location_col = header_col(headers, '위치', 'B')
+    action_col   = header_col(headers, '최근행동', 'C')
+
+    found = {}
+    rows[1..].to_a.each_with_index do |row, i|
+      id = first_present(cell(row, headers, 'ID'), row[0]).to_s.strip
+      norm = id.gsub('@', '').strip
+      match = accounts.find { |a| norm.casecmp?(a) }
+      next unless match
+      found[match] = i + 2
+    end
+
+    pairs = []
+    found.each do |acct, row_num|
+      pairs << ["#{location_col}#{row_num}", [[attrs[:location].to_s]]] if attrs.key?(:location)
+      pairs << ["#{action_col}#{row_num}", [[attrs[:last_action].to_s]]] if attrs.key?(:last_action)
+    end
+    write_batch(SCOUT_SHEET, pairs) unless pairs.empty?
+
+    missing = accounts - found.keys
+    if missing.any?
+      # 추가 직전 한 번 더 최신 상태를 확인한다 (경쟁 조건으로 인한 중복 행 방지).
+      still_missing = missing.dup
+      fresh_rows = read(SCOUT_SHEET, 'A:Z')
+      if fresh_rows[0]
+        fresh_headers = header_map(fresh_rows[0])
+        fresh_location_col = header_col(fresh_headers, '위치', 'B')
+        fresh_action_col   = header_col(fresh_headers, '최근행동', 'C')
+        fresh_found = {}
+        fresh_rows[1..].to_a.each_with_index do |row, i|
+          id = first_present(cell(row, fresh_headers, 'ID'), row[0]).to_s.strip
+          norm = id.gsub('@', '').strip
+          match = still_missing.find { |a| norm.casecmp?(a) }
+          next unless match
+          fresh_found[match] = i + 2
+        end
+        fresh_found.each do |acct, row_num|
+          write(SCOUT_SHEET, "#{fresh_location_col}#{row_num}", [[attrs[:location].to_s]]) if attrs.key?(:location)
+          write(SCOUT_SHEET, "#{fresh_action_col}#{row_num}", [[attrs[:last_action].to_s]]) if attrs.key?(:last_action)
+        end
+        still_missing -= fresh_found.keys
+      end
+      still_missing.each { |acct| append(SCOUT_SHEET, [acct, attrs[:location].to_s, attrs[:last_action].to_s]) }
+    end
+
+    true
+  rescue => e
+    puts "[update_scout_states_batch 오류] #{e.class} - #{e.message}"
     false
   end
 
@@ -417,11 +567,16 @@ class SheetManager
     thread_id = thread_id.to_s.strip
     return false if party_key.empty?
 
+    # 18자리 status ID가 USER_ENTERED 입력 옵션 때문에 숫자로 재해석되어
+    # 과학적 표기법(예: 1.17E+17)으로 정밀도가 손실되는 사고를 막기 위해,
+    # 앞에 작은따옴표를 붙여 시트에 무조건 텍스트로 저장되도록 강제한다.
+    thread_id_safe = thread_id.empty? ? thread_id : "'#{thread_id}"
+
     sheet_id = grid_prev_sheet_id
     rows = read_from(sheet_id, PARTY_THREAD_SHEET, 'A:B')
 
     if rows.empty?
-      append_to(sheet_id, PARTY_THREAD_SHEET, [party_key, thread_id])
+      append_to(sheet_id, PARTY_THREAD_SHEET, [party_key, thread_id_safe])
       return true
     end
 
@@ -432,11 +587,11 @@ class SheetManager
       key = first_present(cell(row, headers, '파티키'), row[0]).to_s.strip
       next unless key == party_key
 
-      write_to(sheet_id, PARTY_THREAD_SHEET, "#{thread_col}#{i + 2}", [[thread_id]])
+      write_to(sheet_id, PARTY_THREAD_SHEET, "#{thread_col}#{i + 2}", [[thread_id_safe]])
       return true
     end
 
-    append_to(sheet_id, PARTY_THREAD_SHEET, [party_key, thread_id])
+    append_to(sheet_id, PARTY_THREAD_SHEET, [party_key, thread_id_safe])
     true
   rescue => e
     puts "[update_party_thread 오류] #{e.class} - #{e.message}"
@@ -462,25 +617,68 @@ class SheetManager
   # 그룹핑하면 이름이 같은 다른 칸의 오브젝트/아이템이 섞여 들어온다.
   # ──────────────────────────────────────────────
 
+  # 여러 좌표의 "공개여부/막힌방향"만 한 번의 시트 읽기로 배치 조회한다.
+  # (available_directions가 방향마다 find_location을 개별 호출하면
+  # 최악의 경우 [탐사/방향] 명령 하나에 최대 12번(4방향 x 3단계 폴백)의
+  # 시트 API 호출이 발생하던 것을 3번 이하로 줄인다 — 2026-08-15 발견.
+  # find_location과 달리 오브젝트/선택지 등 무거운 파싱은 하지 않는다.)
+  def find_cells_public_batch(codes)
+    codes = codes.to_a.map { |c| c.to_s.strip.upcase }.uniq
+    result = {}
+    return result if codes.empty?
+
+    sources = [[@sheet_id, LOCATION_SHEET]]
+    unless @grid_sheet_id.nil?
+      sources << [@grid_sheet_id, LOCATION_SHEET]
+      sources << [@grid_sheet_id, EXTRA_LOCATION_SHEET]
+    end
+
+    remaining = codes.dup
+    sources.each do |sheet_id, sheet_name|
+      break if remaining.empty?
+      rows = read_from(sheet_id, sheet_name, 'A:T')
+      next if rows.empty?
+
+      headers = header_map(rows[0])
+      rows[1..].to_a.each do |row|
+        code = cell(row, headers, '위치').upcase
+        next unless remaining.include?(code)
+
+        result[code] = {
+          public:  truthy?(cell(row, headers, '공개여부')),
+          blocked: cell(row, headers, '막힌방향')
+        }
+        remaining.delete(code)
+      end
+    end
+
+    result
+  rescue => e
+    puts "[find_cells_public_batch 오류] #{e.class} - #{e.message}"
+    result
+  end
+
   def find_location(location_code)
     found = find_location_in(@sheet_id, location_code)
     return found if found
 
     return nil if @grid_sheet_id.nil?
-    find_location_in(@grid_sheet_id, location_code)
+    found = find_location_in(@grid_sheet_id, location_code)
+    return found if found
+    find_location_in(@grid_sheet_id, location_code, EXTRA_LOCATION_SHEET)
   rescue => e
     puts "[find_location 오류] #{e.class} - #{e.message}"
     nil
   end
 
-  def find_location_in(sheet_id, location_code)
-    rows = read_from(sheet_id, LOCATION_SHEET, 'A:S')
+  def find_location_in(sheet_id, location_code, sheet_name = LOCATION_SHEET)
+    rows = read_from(sheet_id, sheet_name, 'A:T')
     return nil if rows.empty?
 
     headers = header_map(rows[0])
     location_lookup = build_location_lookup(rows, headers)
 
-    query = location_code.to_s.strip
+    query = normalize_location_value(location_code)
     query_upper = query.upcase
 
     resolved = location_lookup[query_upper] || location_lookup[query]
@@ -565,18 +763,19 @@ class SheetManager
   def update_object_taken(location_code, obj_name, acct)
     return true if update_object_taken_in(@sheet_id, location_code, obj_name, acct)
     return false if @grid_sheet_id.nil?
-    update_object_taken_in(@grid_sheet_id, location_code, obj_name, acct)
+    return true if update_object_taken_in(@grid_sheet_id, location_code, obj_name, acct)
+    update_object_taken_in(@grid_sheet_id, location_code, obj_name, acct, EXTRA_LOCATION_SHEET)
   rescue => e
     puts "[update_object_taken 오류] #{e.class} - #{e.message}"
     false
   end
 
-  def update_object_taken_in(sheet_id, location_code, obj_name, acct)
+  def update_object_taken_in(sheet_id, location_code, obj_name, acct, sheet_name = LOCATION_SHEET)
     location_code = location_code.to_s.strip.upcase
     obj_name      = obj_name.to_s.strip
     acct          = acct.to_s.gsub('@', '').strip
 
-    rows = read_from(sheet_id, LOCATION_SHEET, 'A:S')
+    rows = read_from(sheet_id, sheet_name, 'A:T')
     return false if rows.empty?
 
     headers = header_map(rows[0])
@@ -594,7 +793,7 @@ class SheetManager
       existing = cell(row, headers, '획득자ID')
       new_val = existing.empty? ? acct : "#{existing},#{acct}"
 
-      write_to(sheet_id, LOCATION_SHEET, "#{taken_col}#{i + 2}", [[new_val]])
+      write_to(sheet_id, sheet_name, "#{taken_col}#{i + 2}", [[new_val]])
       return true
     end
 
@@ -607,18 +806,19 @@ class SheetManager
   def update_credit_taken(location_code, obj_name, acct)
     return true if update_credit_taken_in(@sheet_id, location_code, obj_name, acct)
     return false if @grid_sheet_id.nil?
-    update_credit_taken_in(@grid_sheet_id, location_code, obj_name, acct)
+    return true if update_credit_taken_in(@grid_sheet_id, location_code, obj_name, acct)
+    update_credit_taken_in(@grid_sheet_id, location_code, obj_name, acct, EXTRA_LOCATION_SHEET)
   rescue => e
     puts "[update_credit_taken 오류] #{e.class} - #{e.message}"
     false
   end
 
-  def update_credit_taken_in(sheet_id, location_code, obj_name, acct)
+  def update_credit_taken_in(sheet_id, location_code, obj_name, acct, sheet_name = LOCATION_SHEET)
     location_code = location_code.to_s.strip.upcase
     obj_name      = obj_name.to_s.strip
     acct          = acct.to_s.gsub('@', '').strip
 
-    rows = read_from(sheet_id, LOCATION_SHEET, 'A:S')
+    rows = read_from(sheet_id, sheet_name, 'A:T')
     return false if rows.empty?
 
     headers = header_map(rows[0])
@@ -636,7 +836,7 @@ class SheetManager
       existing = cell(row, headers, '크레딧수령자ID')
       new_val = existing.empty? ? acct : "#{existing},#{acct}"
 
-      write_to(sheet_id, LOCATION_SHEET, "#{taken_col}#{i + 2}", [[new_val]])
+      write_to(sheet_id, sheet_name, "#{taken_col}#{i + 2}", [[new_val]])
       return true
     end
 
@@ -647,7 +847,7 @@ class SheetManager
   end
 
   def available_locations
-    rows = read(LOCATION_SHEET, 'A:S')
+    rows = read(LOCATION_SHEET, 'A:T')
     return [] if rows.empty?
 
     headers = header_map(rows[0])

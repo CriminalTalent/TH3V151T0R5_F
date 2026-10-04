@@ -28,6 +28,10 @@ class InvestigateCommand
       dm_solo("현재 위치 정보가 없습니다. [위치/장소명] 형식으로 먼저 이동해주세요.")
       return
     end
+    if party_all_incapacitated?
+      dm_solo("전투불능 상태라 조사를 진행할 수 없습니다. 회복 후 다시 시도해주세요.")
+      return
+    end
     location = @sheet_manager.find_location(state[:location])
     unless location
       dm_solo("현재 위치 정보를 불러올 수 없습니다.")
@@ -82,12 +86,10 @@ class InvestigateCommand
       end
     end
 
-    @party.each do |acct|
-      @sheet_manager.update_scout_state(acct, {
-        location:    state[:location],
-        last_action: '조사'
-      })
-    end
+    @sheet_manager.update_scout_states_batch(@party, {
+      location:    state[:location],
+      last_action: '조사'
+    })
 
     send_party(lines)
   rescue => e
@@ -96,6 +98,18 @@ class InvestigateCommand
   end
 
   private
+
+
+  # 파티 전원이 전투불능이면 true. 1인일 때는 본인이 전투불능이면 true.
+  # (1명이라도 전투 가능 상태면 false — 조사/이동 진행)
+  def party_all_incapacitated?
+    states = @sheet_manager.find_scout_states(@party)
+    @party.all? do |acct|
+      key = acct.to_s.gsub('@', '').strip
+      state = states[key]
+      state && state[:last_action].to_s.strip == '전투불능'
+    end
+  end
 
   # ── 크리쳐 조우 ──
 
@@ -137,12 +151,10 @@ class InvestigateCommand
 
     post(encounter_text, thread_anchor)
 
-    @party.each do |acct|
-      @sheet_manager.update_scout_state(acct, {
-        location:    location_code,
-        last_action: '전투전환'
-      })
-    end
+    @sheet_manager.update_scout_states_batch(@party, {
+      location:    location_code,
+      last_action: '전투전환'
+    })
   end
 
   # ── 파티 구성 ──
@@ -174,11 +186,13 @@ class InvestigateCommand
 
   def hidden_object?(obj)
     once_taken = obj[:once] && !obj[:taken_by].to_s.strip.empty?
-    credit_settled = obj[:credit].to_i != 0 && !obj[:credit_taken_by].to_s.strip.empty?
+    # 크레딧 정산 완료로 숨기는 것은 1회 한정(once) 오브젝트에만 적용한다.
+    # once 체크가 꺼져 있으면 크레딧을 이미 받았어도 재조사 시 지문과 아이템 안내를 계속 준다.
+    credit_settled = obj[:once] && obj[:credit].to_i != 0 && !obj[:credit_taken_by].to_s.strip.empty?
     once_taken || credit_settled
   end
 
-  GRID_COORD_RE = /\A[C-O][2-8]\z/.freeze
+  GRID_COORD_RE = /\A[C-O](?:[2-8]|1[0-6])\z/.freeze
 
   def location_title(location)
     code = location[:code].to_s.strip
@@ -239,11 +253,16 @@ class InvestigateCommand
   end
 
   def post(text, reply_id)
-    @mastodon_client.post_status(
+    result = @mastodon_client.post_status(
       text,
       reply_to_id: reply_id,
       visibility: 'direct'
     )
+    # post_status가 예외 없이 nil을 반환하는 경우(예: 429 재시도 소진)도 있어,
+    # 이 경우는 rescue가 안 걸려 응답이 조용히 사라지던 문제가 있었다.
+    # 추적을 위해 명시적으로 경고 로그를 남긴다.
+    puts "[InvestigateCommand 게시 실패] post_status가 nil을 반환함 (reply_id=#{reply_id})" unless result
+    result
   rescue => e
     puts "[InvestigateCommand DM 오류] #{e.class}: #{e.message}"
     nil

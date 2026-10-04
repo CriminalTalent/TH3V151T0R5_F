@@ -149,7 +149,7 @@ class AcquireCommand
     credit_settled
   end
 
-  GRID_COORD_RE = /\A[C-O][2-8]\z/.freeze
+  GRID_COORD_RE = /\A[C-O](?:[2-8]|1[0-6])\z/.freeze
 
   def location_title(location)
     code = location[:code].to_s.strip
@@ -212,11 +212,16 @@ class AcquireCommand
   end
 
   def post(text, reply_id)
-    @mastodon_client.post_status(
+    result = @mastodon_client.post_status(
       text,
       reply_to_id: reply_id,
       visibility: 'direct'
     )
+    # post_status가 예외 없이 nil을 반환하는 경우(예: 429 재시도 소진)도 있어,
+    # 이 경우는 rescue가 안 걸려 응답이 조용히 사라지던 문제가 있었다.
+    # 추적을 위해 명시적으로 경고 로그를 남긴다.
+    puts "[AcquireCommand 게시 실패] post_status가 nil을 반환함 (reply_id=#{reply_id})" unless result
+    result
   rescue => e
     puts "[AcquireCommand DM 오류] #{e.class}: #{e.message}"
     nil

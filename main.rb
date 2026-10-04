@@ -67,13 +67,19 @@ loop do
       next unless nid > last_id
       next unless n['type'] == 'mention'
 
-      last_id = nid
-      File.write(LAST_FILE, last_id.to_s)
-
       puts "[멘션] ID=#{nid}, status_id=#{n.dig('status', 'id')}, from=@#{n.dig('account', 'acct')}"
       puts "[처리 시작] notification_id=#{nid}, status_id=#{n.dig('status', 'id')}"
       CommandParser.parse(client, sheet_manager, n)
       puts "[처리 종료] notification_id=#{nid}, status_id=#{n.dig('status', 'id')}"
+
+      # last_id 저장을 처리 "성공 이후"로 미룬다. 처리 도중 프로세스가 강제
+      # 종료(재시작 등으로 Interrupt)되면, 이전에는 이미 last_id가 앞서
+      # 저장되어 있어 그 멘션이 다시는 처리되지 않고 조용히 유실되는 문제가
+      # 있었다. 이제는 처리가 끝까지 성공한 뒤에만 저장하므로, 중간에 죽으면
+      # 다음 폴링에서 같은 멘션을 자동으로 다시 처리한다 (위치 갱신 등은
+      # 같은 값으로 다시 써도 무해하며, 응답 게시도 이번엔 성공할 수 있다).
+      last_id = nid
+      File.write(LAST_FILE, last_id.to_s)
 
       sleep 1
     end

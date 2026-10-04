@@ -20,15 +20,25 @@ class LocationCommand
   end
 
   def execute
+    puts "[위치 진단] sender=#{@sender.inspect} location=#{@location_code.inspect} party=#{@party.inspect}"
     user = @sheet_manager.find_user(@sender)
+    puts "[위치 진단] find_user=#{!user.nil?}"
     unless user
       dm_solo("아직 등록되지 않은 계정입니다.")
       return
     end
 
     location = @sheet_manager.find_location(@location_code)
+    puts "[위치 진단] find_location=#{location.inspect}"
     unless location
       dm_solo("#{@location_code} 은(는) 존재하지 않는 위치입니다.")
+      return
+    end
+    incapacitated = party_all_incapacitated?
+    puts "[위치 진단] party_all_incapacitated=#{incapacitated.inspect}"
+
+    if incapacitated
+      dm_solo("전투불능 상태라 이동할 수 없습니다. 회복 후 다시 시도해주세요.")
       return
     end
 
@@ -37,7 +47,9 @@ class LocationCommand
       return
     end
 
-    move_party!(location[:code])
+    puts "[위치 진단] move_party 진입 coord=#{location[:code].inspect} party=#{@party.inspect}"
+    move_result = move_party!(location[:code])
+    puts "[위치 진단] move_party 반환=#{move_result.inspect}"
 
     if location[:creature] && !location[:creature].to_s.strip.empty?
       trigger_encounter(location)
@@ -61,7 +73,19 @@ class LocationCommand
 
   private
 
-  GRID_COORD_RE = /\A[C-O][2-8]\z/.freeze
+  GRID_COORD_RE = /\A[C-O](?:[2-8]|1[0-6])\z/.freeze
+
+
+  # 파티 전원이 전투불능이면 true. 1인일 때는 본인이 전투불능이면 true.
+  # (1명이라도 전투 가능 상태면 false — 조사/이동 진행)
+  def party_all_incapacitated?
+    states = @sheet_manager.find_scout_states(@party)
+    @party.all? do |acct|
+      key = acct.to_s.gsub('@', '').strip
+      state = states[key]
+      state && state[:last_action].to_s.strip == '전투불능'
+    end
+  end
 
   # ── 파티 구성 ──
 
@@ -88,12 +112,10 @@ class LocationCommand
 
   # 파티 전원의 조사상태 위치를 함께 갱신한다.
   def move_party!(coord)
-    @party.each do |acct|
-      @sheet_manager.update_scout_state(acct, {
-        location:    coord,
-        last_action: '이동'
-      })
-    end
+    @sheet_manager.update_scout_states_batch(@party, {
+      location:    coord,
+      last_action: '이동'
+    })
   end
 
   def location_title(location)
@@ -180,12 +202,10 @@ class LocationCommand
     # 조사는 DM 흐름이므로 전투 전환 안내도 이번 명령의 스레드에 고정한다.
     post(encounter_text, @status['id'])
 
-    @party.each do |acct|
-      @sheet_manager.update_scout_state(acct, {
-        location:    location[:code],
-        last_action: '전투전환'
-      })
-    end
+    @sheet_manager.update_scout_states_batch(@party, {
+      location:    location[:code],
+      last_action: '전투전환'
+    })
   end
 
   def build_lines(location)
@@ -261,7 +281,7 @@ class LocationCommand
   end
 
   def grid_neighbor_coord(coord, delta)
-    m = coord.to_s.strip.upcase.match(/\A([C-O])([2-8])\z/)
+    m = coord.to_s.strip.upcase.match(GridMoveCommand::COORD_RE)
     return nil unless m
 
     cols = GridMoveCommand::COLS
@@ -276,21 +296,25 @@ class LocationCommand
 
     return nil unless new_col_idx.between?(0, cols.length - 1)
     return nil unless new_row_idx.between?(0, rows.length - 1)
+    return nil if GridMoveCommand.zone_of(m[2].to_i) != GridMoveCommand.zone_of(rows[new_row_idx])
 
     "#{cols[new_col_idx]}#{rows[new_row_idx]}"
   end
 
   def grid_available_directions(location)
     blocked = grid_blocked_directions(location)
-
-    GridMoveCommand::DIRECTIONS.each_with_object([]) do |(name, delta), list|
+    candidates = {}
+    GridMoveCommand::DIRECTIONS.each do |name, delta|
       next if blocked.include?(name)
-
       target = grid_neighbor_coord(location[:code], delta)
-      next unless target
+      candidates[name] = target if target
+    end
+    return [] if candidates.empty?
 
-      target_location = @sheet_manager.find_location(target)
-      list << name if target_location && target_location[:public]
+    lookup = @sheet_manager.find_cells_public_batch(candidates.values)
+    candidates.each_with_object([]) do |(name, target), list|
+      info = lookup[target.to_s.strip.upcase]
+      list << name if info && info[:public]
     end
   end
 
@@ -341,11 +365,16 @@ class LocationCommand
   end
 
   def post(text, reply_id)
-    @mastodon_client.post_status(
+    result = @mastodon_client.post_status(
       text,
       reply_to_id: reply_id,
       visibility: 'direct'
     )
+    # post_status가 예외 없이 nil을 반환하는 경우(예: 429 재시도 소진)도 있어,
+    # 이 경우는 rescue가 안 걸려 응답이 조용히 사라지던 문제가 있었다.
+    # 추적을 위해 명시적으로 경고 로그를 남긴다.
+    puts "[LocationCommand 게시 실패] post_status가 nil을 반환함 (reply_id=#{reply_id})" unless result
+    result
   rescue => e
     puts "[LocationCommand DM 오류] #{e.class}: #{e.message}"
     nil
