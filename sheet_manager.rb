@@ -371,6 +371,41 @@ class SheetManager
     value.to_s.gsub("\u00A0", " ").gsub(/\s+/, ' ').strip
   end
 
+  # 장소 '체력감소': '스탯' 탭의 현재건강을 amount만큼 깎는다 (0 미만으로는 내려가지 않음).
+  # 반환: [{acct:, name:, before:, after:, lost:}] (스탯 탭에서 찾은 계정만)
+  def apply_health_loss(accounts, amount)
+    amount = amount.to_i
+    wanted = accounts.to_a.map { |a| a.to_s.gsub('@', '').strip }.uniq
+    return [] if amount <= 0 || wanted.empty?
+
+    rows = read('스탯', 'A:K')
+    return [] if rows.empty?
+
+    headers = header_map(rows[0])
+    header_row = rows[0].to_a.map { |h| h.to_s.strip }
+    hp_idx = header_row.index('현재건강') || header_row.index('건강') || 4
+    hp_letter = ('A'.ord + hp_idx).chr
+
+    results = []
+    rows[1..].to_a.each_with_index do |row, i|
+      id = first_present(cell(row, headers, 'ID'), row[0]).to_s.gsub('@', '').strip
+      match = wanted.find { |w| id.casecmp?(w) }
+      next unless match
+
+      raw = row[hp_idx].to_s.strip
+      before = raw.empty? ? 50 : raw.to_i
+      after = [before - amount, 0].max
+      lost = before - after
+      write('스탯', "#{hp_letter}#{i + 2}", [[after]]) if lost > 0
+      name = first_present(cell(row, headers, '이름'), row[1]).to_s.strip
+      results << { acct: match, name: name, before: before, after: after, lost: lost }
+    end
+    results
+  rescue => e
+    puts "[apply_health_loss 오류] #{e.class} - #{e.message}"
+    []
+  end
+
   def update_scout_states_batch(accounts, attrs)
     accounts = accounts.to_a.map { |a| a.to_s.gsub('@', '').strip }.uniq
     return true if accounts.empty?
@@ -716,7 +751,8 @@ class SheetManager
             choices:  choices,
             public:   truthy?(cell(row, headers, '공개여부')),
             creature: cell(row, headers, '크리쳐'),
-            blocked:  cell(row, headers, '막힌방향')
+            blocked:  cell(row, headers, '막힌방향'),
+            hp_loss:  cell(row, headers, '체력감소')
           }
         else
           in_group = false

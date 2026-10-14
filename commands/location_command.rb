@@ -51,12 +51,26 @@ class LocationCommand
     move_result = move_party!(location[:code])
     puts "[위치 진단] move_party 반환=#{move_result.inspect}"
 
-    if location[:creature] && !location[:creature].to_s.strip.empty?
+    hp_lines, all_down = apply_location_hp_loss(location)
+    has_creature = location[:creature] && !location[:creature].to_s.strip.empty?
+
+    if has_creature
+      head = ["[ #{location_title(location)} ]", "──────────────────"]
+      if all_down
+        send_party(head + hp_lines + ["", "파티 전원이 쓰러져 전투를 시작할 수 없습니다."])
+        return
+      end
+      send_party(head + hp_lines) if hp_lines.any?
       trigger_encounter(location)
       return
     end
 
-    send_party(build_lines(location))
+    lines = build_lines(location)
+    unless hp_lines.empty?
+      lines << ""
+      lines.concat(hp_lines)
+    end
+    send_party(lines)
   rescue => e
     puts "[LocationCommand 오류] #{e.class}: #{e.message}"
     puts e.backtrace.first(5)
@@ -75,6 +89,33 @@ class LocationCommand
 
   GRID_COORD_RE = /\A[C-O](?:[2-8]|1[0-6])\z/.freeze
 
+
+  # 장소 시트의 '체력감소' 값만큼 파티 전원의 체력을 깎는다.
+  # 반환: [출력 줄 배열, 파티 전원이 쓰러졌는지]
+  def apply_location_hp_loss(location)
+    amount = location[:hp_loss].to_s.strip.to_i
+    return [[], false] if amount <= 0
+
+    results = @sheet_manager.apply_health_loss(@party, amount)
+    return [[], false] if results.empty?
+
+    zeroed = results.select { |r| r[:after] <= 0 }.map { |r| r[:acct] }
+    @sheet_manager.update_scout_states_batch(zeroed, { last_action: '전투불능' }) if zeroed.any?
+
+    lines = []
+    results.select { |r| r[:lost] > 0 }.each do |r|
+      label = r[:name].to_s.empty? ? r[:acct] : r[:name]
+      down  = r[:after] <= 0 ? ' 전투불능 상태가 되었습니다.' : ''
+      lines << "#{label}의 건강이 #{r[:lost]} 감소했습니다. (#{r[:before]} → #{r[:after]})#{down}"
+    end
+    lines.unshift("[체력 감소]") unless lines.empty?
+
+    all_down = results.size == @party.map(&:to_s).uniq.size && results.all? { |r| r[:after] <= 0 }
+    [lines, all_down]
+  rescue => e
+    puts "[장소 체력감소 오류] #{e.class}: #{e.message}"
+    [[], false]
+  end
 
   # 파티 전원이 전투불능이면 true. 1인일 때는 본인이 전투불능이면 true.
   # (1명이라도 전투 가능 상태면 false — 조사/이동 진행)
