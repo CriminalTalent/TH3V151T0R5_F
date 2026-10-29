@@ -59,6 +59,24 @@ class SheetManager
     false
   end
 
+  def write_raw_to(sheet_id, sheet, range, values)
+    body = Google::Apis::SheetsV4::ValueRange.new(values: values)
+
+    with_retry("쓰기(RAW) #{sheet}!#{range}") do
+      @service.update_spreadsheet_value(
+        sheet_id,
+        "#{sheet}!#{range}",
+        body,
+        value_input_option: 'RAW'
+      )
+    end
+
+    true
+  rescue => e
+    puts "[시트 쓰기 오류] #{sheet}!#{range}: #{e.class} - #{e.message}"
+    false
+  end
+
   # 여러 셀을 한 번의 API 호출로 함께 쓴다. range_value_pairs는
   # [[범위문자열, [[값]]], ...] 형태.
   def write_batch(sheet, range_value_pairs)
@@ -189,7 +207,7 @@ class SheetManager
         id:      id,
         acct:    id.gsub('@', ''),
         name:    first_present(cell(row, headers, '이름'), row[1]),
-        credits: first_present(cell(row, headers, '크레딧'), row[2]).to_i,
+        credits: first_present(cell(row, headers, '크레딧'), row[2]).to_s.gsub(/[^\-0-9]/, '').to_i,
         items:   first_present(cell(row, headers, '아이템'), row[3]).to_s,
         house:   first_present(cell(row, headers, '기숙사'), row[4]).to_s.strip
       }
@@ -226,7 +244,12 @@ class SheetManager
         col = col_map[key]
         next unless col
 
-        write(USERS_SHEET, "#{col}#{row_num}", [[val]])
+        # 크레딧은 시트가 약 15자리까지만 정확히 저장하므로 RAW 문자열로 쓴다.
+        if key == :credits
+          write_raw_to(@sheet_id, USERS_SHEET, "#{col}#{row_num}", [[val.to_i.to_s]])
+        else
+          write(USERS_SHEET, "#{col}#{row_num}", [[val]])
+        end
       end
 
       return true
